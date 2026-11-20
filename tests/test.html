@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scanner Tests</title>
+<style>
+:root{--bg:#fff;--text:#111;--ok:#1a7f37;--bad:#cf222e}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1117;--text:#e6e8ee;--ok:#48bb78;--bad:#f56565}}
+body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;padding:16px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+iframe{width:100%;height:300px;border:1px solid #888;margin-top:16px}
+</style>
+</head>
+<body>
+<h1>Scanner tests</h1>
+<p>Runs the real scanner (separate test storage) against a fake sheet that behaves like <code>apps-script/Code.gs</code>. Serve the project folder and open <code>/tests/test.html</code>.</p>
+<pre id="out">Loading scanner…</pre>
+<iframe id="app" src="../index.html?test"></iframe>
+<script>
+const out = document.getElementById('out');
+const results = [];
+function check(name, cond, detail='') { results.push({name, ok:!!cond, detail}); }
+
+// ---- Fake sheet: same request/response shapes as Code.gs ----
+const FAKE = 'https://fake.sheet/exec';
+const server = { log: [], settings: {batchSize:50, prefix:'B', digits:4, next:1}, failPull:false };
+function serverHandle(p) {
+  const S = server;
+  if (p.action === 'push') {
+    const seen = new Set(S.log.map(r => r[2]));
+    for (const o of p.ops) if (!seen.has(o.opId)) S.log.push([new Date().toISOString(), o.device, o.opId, o.rid, o.name, o.setName, o.code, o.num, o.foil?'Foil':'', o.batch, o.qty, o.rarity, o.type]);
+    return {ok:true, total:S.log.length};
+  }
+  if (p.action === 'pull') {
+    if (S.failPull) throw new Error('network down');
+    let since = p.since || 0; if (since > S.log.length) since = 0;
+    return {ok:true, since, anchor: since ? String(S.log[since-1][2]) : '', total:S.log.length, rows:S.log.slice(since), settings:{...S.settings}};
+  }
+  if (p.action === 'nextBatch') {
+    const used = new Set(S.log.map(r => r[9])); let n = S.settings.next, code;
+    do { code = S.settings.prefix + String(n).padStart(S.settings.digits,'0'); n++; } while (used.has(code));
+    S.settings.next = n; return {ok:true, code, batchSize:S.settings.batchSize, settings:{...S.settings}};
+  }
+  if (p.action === 'saveSettings') { for (const k of Object.keys(p.settings)) S.settings[k] = p.settings[k]; return {ok:true, settings:{...S.settings}}; }
+  return {ok:true, settings:{...S.settings}, total:S.log.length};
+}
+const serverQty = rid => server.log.filter(r => r[3] === rid).reduce((s, r) => s + Number(r[10]), 0);
+
+async function run() {
+  const win = document.getElementById('app').contentWindow;
+  // Route the app's sheet calls to the fake sheet; everything else uses the real network.
+  const realFetch = win.fetch.bind(win);
+  win.fetch = async (url, opts) => {
+    if (url !== FAKE) return realFetch(url, opts);
+    const body = serverHandle(JSON.parse(opts.body));
+    return { json: async () => body };
+  };
+  await new Promise(r => { const t = setInterval(() => { if (win.__rb && win.__rb.cards.length) { clearInterval(t); r(); } }, 200); });
+  const rb = win.__rb;
+  const fresh = (url='') => { rb.reset(); rb.cfg.syncUrl = url; rb.cfg.batch = {batchSize:50, prefix:'B', digits:4, next:1};
+    server.log = []; server.settings = {batchSize:50, prefix:'B', digits:4, next:1}; server.failPull = false; };
+  const RID = 'unl-121-219', RID2 = 'unl-235*-219';
+
+  // 1. Reading the printed code
+  const pc = rb.parseCode('G S UNL235*/219 7V');
+  check('parseCode: full code with *', pc && pc.code==='UNL' && pc.num===235 && pc.suf==='*' && pc.size===219, JSON.stringify(pc));
+  const pc2 = rb.parseCode('TT XS SNO L228*/219 K');
+  check('parseCode: number without set code', pc2 && !pc2.code && pc2.num===228 && pc2.suf==='*' && pc2.size===219, JSON.stringify(pc2));
+  const pc3 = rb.parseCode('QC UNLO35/219');
+  check('parseCode: O read as zero', pc3 && pc3.num===35 && pc3.code==='UNL', JSON.stringify(pc3));
+  check('parseCode: no code', rb.parseCode('N G HZ2026RGI 1Y S N') === null);
+  const pick = rb.pickByCode(rb.cards, rb.parseCode('UNL235*/219'));
+  check('pickByCode: picks the * printing', pick && pick.rid === RID2, pick && pick.rid);
+
+  // 2. Undo after the upload worked but the download failed (audit finding 1)
+  fresh(FAKE);
+  await rb.addCard(RID, false, 1);
+  server.failPull = true; await rb.sync(); server.failPull = false;
+  rb.undo(); await new Promise(r => setTimeout(r, 50)); await rb.sync();
+  check('undo after lost reply: sheet total is 0', serverQty(RID) === 0, 'sheet qty ' + serverQty(RID));
+  check('undo after lost reply: app total is 0', !rb.state.inv.get(RID + '|0'), 'app qty ' + rb.state.inv.get(RID + '|0'));
+
+  // 3. Undo before anything was sent just deletes it
+  fresh(FAKE);
+  await rb.addCard(RID, false, 1); rb.undo(); await rb.sync();
+  check('undo before sync: nothing reaches the sheet', server.log.length === 0, server.log.length + ' rows');
+
+  // 4. Other device's scans arrive; repeated uploads are not double counted
+  fresh(FAKE);
+  await rb.addCard(RID, false, 1); await rb.sync();
+  serverHandle({action:'push', ops:[{opId:'Phone-1', device:'Phone', rid:RID, foil:false, batch:'B9999', qty:2}]});
+  serverHandle({action:'push', ops:[{opId:'Phone-1', device:'Phone', rid:RID, foil:false, batch:'B9999', qty:2}]});
+  await rb.sync();
+  check('sync: other device counted once', rb.state.inv.get(RID + '|0') === 3, 'app qty ' + rb.state.inv.get(RID + '|0'));
+
+  // 5. A row deleted by hand in the sheet (audit finding 5)
+  server.log.splice(0, 1); // delete this device's row
+  serverHandle({action:'push', ops:[{opId:'Phone-2', device:'Phone', rid:RID2, foil:true, batch:'B9999', qty:1}]});
+  await rb.sync();
+  check('hand-deleted row: app matches sheet', rb.state.inv.get(RID + '|0') === serverQty(RID) && rb.state.inv.get(RID2 + '|1') === 1,
+    `app ${rb.state.inv.get(RID + '|0')} vs sheet ${serverQty(RID)}`);
+
+  // 6. Batches made before connecting the sheet don't get reused (audit finding 2)
+  fresh('');
+  await rb.addCard(RID, false, 1);               // local-only: makes B0001
+  const localCode = rb.state.batch.code;
+  rb.cfg.syncUrl = FAKE;
+  await rb.pushBatchSettings(rb.cfg.batch, true, false);
+  await rb.sync();
+  await rb.startBatch();
+  check('connect: new batch code is not reused', rb.state.batch.code !== localCode, `${localCode} then ${rb.state.batch.code}`);
+
+  // 7. Batch rollover
+  fresh(FAKE); rb.cfg.batch.batchSize = 3; server.settings.batchSize = 3;
+  for (let i = 0; i < 4; i++) await rb.addCard(RID, false, 1);
+  const codes = [...new Set(rb.state.pend.map(o => o.batch))];
+  check('batch fills at size and rolls over', codes.length === 2 && rb.state.pend.filter(o => o.batch === codes[0]).length === 3, codes.join(','));
+
+  // 8. Exposure change doesn't look like a new scene (audit finding 3)
+  const cam = document.createElement('canvas'); cam.width = 640; cam.height = 480; const x = cam.getContext('2d');
+  for (let i = 0; i < 60; i++) { x.fillStyle = `hsl(${i*37%360},60%,${30+i%40}%)`; x.fillRect((i*53)%600, (i*97)%440, 80, 60); }
+  rb.step(cam, 640, 480); const g1 = Array.from(rb.prevGray);
+  const cam2 = document.createElement('canvas'); cam2.width = 640; cam2.height = 480; const y = cam2.getContext('2d');
+  y.filter = 'brightness(1.35)'; y.drawImage(cam, 0, 0);
+  rb.step(cam2, 640, 480);
+  const d = rb.meanDiff(g1, rb.prevGray);
+  check('exposure +35%: snapshot difference below the same-card limit (4)', d < 4, 'difference ' + d.toFixed(2));
+
+  rb.reset(); rb.cfg.syncUrl = '';
+  const failed = results.filter(r => !r.ok).length;
+  out.innerHTML = results.map(r => `<span class="${r.ok ? 'ok' : 'bad'}">${r.ok ? 'PASS' : 'FAIL'}</span> ${r.name}${r.ok ? '' : ' — ' + r.detail}`).join('\n')
+    + `\n\n<b class="${failed ? 'bad' : 'ok'}">${results.length - failed}/${results.length} passed</b>`;
+  document.title = failed ? 'FAIL' : 'PASS';
+}
+document.getElementById('app').addEventListener('load', () => run().catch(e => { out.textContent = 'Test run crashed: ' + e.stack; document.title = 'FAIL'; }));
+</script>
+</body>
+</html>

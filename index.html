@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1117">
+<title>Riftbound Scanner</title>
+<style>
+:root{--bg:#0f1117;--panel:#181b24;--line:#2a2f3d;--text:#e6e8ee;--muted:#8b92a5;--acc:#4fd1c5;--ok:#48bb78;--warn:#ed8936;--bad:#f56565;--btn:#232736}
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{margin:0;color:var(--text);font:14px/1.4 system-ui,Segoe UI,Roboto,sans-serif}
+header{display:flex;gap:10px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+.muted{color:var(--muted)}
+.pill{font-size:12px;padding:2px 8px;border-radius:99px;background:var(--btn);border:1px solid var(--line)}
+.pill.ok{border-color:var(--ok);color:var(--ok)}.pill.warn{border-color:var(--warn);color:var(--warn)}.pill.bad{border-color:var(--bad);color:var(--bad)}
+button,select,input{font:inherit;color:var(--text);background:var(--btn);border:1px solid var(--line);border-radius:6px;padding:6px 10px;min-height:34px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.on{background:var(--acc);color:#000;border-color:var(--acc)}
+button.big{font-size:16px;padding:10px 16px}
+main{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px;padding:12px 16px}
+@media(max-width:900px){main{grid-template-columns:1fr;padding:8px}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
+#camWrap{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/9}
+@media(max-width:900px){#camWrap{aspect-ratio:3/4}}
+video{width:100%;height:100%;object-fit:contain;display:block}
+#guide{position:absolute;border:3px dashed rgba(79,209,197,.85);border-radius:10px;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.35);transition:border-color .1s}
+#guide.moving{border-color:var(--warn)}#guide.hit{border-color:var(--ok);border-style:solid}
+#status{position:absolute;left:8px;bottom:8px;right:8px;background:rgba(0,0,0,.72);padding:6px 10px;border-radius:6px;font-size:13px}
+#banner{position:absolute;left:8px;right:8px;top:8px;background:var(--warn);color:#000;font-weight:600;padding:10px;border-radius:6px;display:none;text-align:center}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+#batchBox{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px}
+#batchCode{font-size:26px;font-weight:700;letter-spacing:1px;font-variant-numeric:tabular-nums}
+#batchBar{height:8px;background:var(--btn);border-radius:4px;overflow:hidden;width:160px}
+#batchBar div{height:100%;background:var(--acc);width:0}
+#last{display:flex;gap:12px;min-height:150px}
+#last img{width:108px;height:151px;object-fit:cover;border-radius:6px;background:#000;flex:none}
+#last h2{margin:0 0 4px;font-size:17px}
+#results{max-height:260px;overflow:auto;margin-top:6px}
+.res{display:flex;gap:8px;align-items:center;padding:4px 6px;border-radius:6px;cursor:pointer}
+.res:hover,.res.sel{background:var(--btn)}
+.res img{width:28px;height:39px;object-fit:cover;border-radius:3px;flex:none}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{color:var(--muted);font-weight:500;position:sticky;top:0;background:var(--panel)}
+#invWrap{max-height:480px;overflow:auto;margin-top:8px}
+.qty button{padding:0 8px;min-height:26px}
+.foil{color:#f6e05e}
+kbd{background:var(--btn);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:12px}
+#flash{position:fixed;inset:0;background:var(--ok);opacity:0;pointer-events:none;transition:opacity .2s}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;max-width:560px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog label{display:block;margin-top:10px}
+dialog input{width:100%}
+dialog h3{margin:16px 0 4px;font-size:14px;color:var(--acc)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+#qr{background:#fff;padding:8px;display:inline-block;margin-top:8px;border-radius:6px}
+.hide-sm{}@media(max-width:900px){.hide-sm{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Riftbound Scanner</h1>
+  <span id="dbStatus" class="pill">Loading cards…</span>
+  <span id="syncStatus" class="pill">Local only</span>
+  <span style="flex:1"></span>
+  <span class="muted hide-sm"><kbd>Space</kbd> +1 last <kbd>Z</kbd> undo <kbd>F</kbd> foil <kbd>P</kbd> pause <kbd>/</kbd> search</span>
+  <button id="settingsBtn">Settings</button>
+</header>
+<main>
+  <section class="panel">
+    <div id="camWrap">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="guide"></div>
+      <div id="banner"></div>
+      <div id="status">Tap “Start camera”.</div>
+    </div>
+    <div class="row">
+      <button id="camBtn" class="big on">Start camera</button>
+      <select id="camSel" style="max-width:180px"></select>
+      <button id="foilBtn">Foil: off</button>
+      <button id="autoBtn" class="on">Auto-add: on</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="addBtn" class="big" style="display:none">+ Add detected</button>
+    </div>
+    <div id="batchBox">
+      <div><div class="muted" style="font-size:12px">Current batch</div><div id="batchCode">—</div></div>
+      <div><div id="batchCount" class="muted">0 / 50</div><div id="batchBar"><div></div></div></div>
+      <span style="flex:1"></span>
+      <button id="newBatchBtn">New batch</button>
+      <button id="setBatchBtn">Set code</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div id="last"><div class="muted">Last scanned card appears here.</div></div>
+    <div class="row">
+      <input id="search" placeholder="Find or add: name, number, or “unl 121”…" style="flex:1;min-width:180px" autocomplete="off">
+    </div>
+    <div id="results"></div>
+  </section>
+
+  <section class="panel" style="grid-column:1/-1">
+    <div class="row" style="margin-top:0">
+      <strong id="invSummary">Inventory</strong>
+      <span style="flex:1"></span>
+      <input id="filter" placeholder="Filter…" style="width:150px">
+      <a id="sheetLink" target="_blank" rel="noopener" style="display:none"><button>Open sheet</button></a>
+      <button id="exportBtn">Export CSV</button>
+    </div>
+    <div id="invWrap"><table><thead><tr><th>Qty</th><th>Card</th><th>Set</th><th>#</th><th class="hide-sm">Rarity</th><th>Batches</th></tr></thead><tbody id="inv"></tbody></table></div>
+  </section>
+</main>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h2 style="margin:0">Settings</h2>
+    <h3>Google Sheet sync</h3>
+    <label>Web app URL (from Apps Script deploy)<input id="sSync" placeholder="https://script.google.com/macros/s/…/exec"></label>
+    <label>Sheet link (for the “Open sheet” button)<input id="sSheet" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
+    <label>This device's name<input id="sDevice"></label>
+    <h3>Chaos-sort batches (shared by all devices)</h3>
+    <div class="grid2">
+      <label>Cards per batch<input id="sBatchSize" type="number" min="1"></label>
+      <label>Code prefix<input id="sPrefix"></label>
+      <label>Number digits<input id="sDigits" type="number" min="1"></label>
+      <label>Next batch number<input id="sNext" type="number" min="1"></label>
+    </div>
+    <h3>Scanning</h3>
+    <label>Guide box size: <span id="sGuideVal"></span><input id="sGuide" type="range" min="0.5" max="0.95" step="0.01"></label>
+    <label>Motion tolerance (higher = scans with more shake): <span id="sStillVal"></span><input id="sStill" type="range" min="2" max="15" step="0.5"></label>
+    <label><input id="sStack" type="checkbox" style="width:auto"> Stack mode: count the same card again when a new copy is laid on top</label>
+    <h3>Phone setup</h3>
+    <p class="muted" style="margin:4px 0">Scan this on your phone to open the scanner with sync already set up (needs the page hosted on HTTPS).</p>
+    <div id="qrWrap"><button type="button" id="qrBtn">Show QR code</button><br><div id="qr" style="display:none"></div><div id="qrUrl" class="muted" style="word-break:break-all;font-size:12px"></div></div>
+    <h3>Data</h3>
+    <div class="row" style="margin-top:4px">
+      <button type="button" id="resyncBtn">Full re-sync from sheet</button>
+            <button type="button" id="clearBtn">Clear local data</button>
+    </div>
+    <div class="row"><span style="flex:1"></span><button value="cancel">Cancel</button><button id="saveSettings" value="save" class="on">Save</button></div>
+  </form>
+</dialog>
+<div id="flash"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const API = 'https://api.riftcodex.com/cards';
+const NS = new URLSearchParams(location.search).has('test') ? 'rb_test_' : 'rb_'; // tests/test.html uses separate storage
+const K = { db:NS+'cards_v2', log:NS+'log_v2', pending:NS+'pending_v2', cfg:NS+'cfg_v2', batch:NS+'batch_v2' };
+let storageErr=false;
+const load = (k,d) => { try{ const v=JSON.parse(localStorage.getItem(k)); return v ?? d }catch{ return d } };
+const save = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); return true }catch(e){ console.warn('storage', e); storageErr=true; return false } };
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+const baseName = n => norm(String(n).replace(/\(.*?\)/g,''));
+const isPhone = /Mobi|Android|iPhone/i.test(navigator.userAgent);
+
+// ---------------- Config ----------------
+const cfg = Object.assign({ syncUrl:'', sheetUrl:'', device: isPhone?'Phone':'PC', guide: isPhone?0.62:0.8, still:5, stack:true,
+  batch:{ batchSize:50, prefix:'B', digits:4, next:1 } }, load(K.cfg, {}));
+const saveCfg = () => save(K.cfg, cfg);
+let hashConnected=false;
+(function readHash(){ // phone setup link: #sync=<url>&sheet=<url>
+  const h = new URLSearchParams(location.hash.slice(1));
+  if(h.get('sync')){ hashConnected=cfg.syncUrl!==h.get('sync'); cfg.syncUrl=h.get('sync'); if(h.get('sheet')) cfg.sheetUrl=h.get('sheet'); saveCfg(); history.replaceState(null,'',location.pathname); }
+})();
+
+// ---------------- Card database ----------------
+let cards=[], byRid={}, nameIndex=[];
+async function fetchDb(){
+  $('#dbStatus').textContent='Downloading cards…';
+  const get = p => fetch(`${API}?size=100&page=${p}`).then(r=>{ if(!r.ok) throw new Error(r.status); return r.json() });
+  const first = await get(1);
+  const rest = await Promise.all(Array.from({length:first.pages-1},(_,i)=>get(i+2)));
+  const items = first.items.concat(...rest.map(p=>p.items));
+  const slim = items.map(c=>{
+    const m = /^([a-z]+)-(\d+)([^-]*)-(\d+)$/i.exec(c.riftbound_id||'')||[];
+    return { rid:c.riftbound_id, name:c.name, setName:c.set?.label||'', code:(m[1]||c.set?.set_id||'').toUpperCase(),
+      num:c.collector_number, suffix:m[3]||'', setSize:+m[4]||0, rarity:c.classification?.rarity||'', type:c.classification?.type||'',
+      domain:(c.classification?.domain||[]).join('/'), img:c.media?.image_url||'', tcg:c.tcgplayer_id||'',
+      variant:!!(c.metadata?.alternate_art||c.metadata?.overnumbered||c.metadata?.signature) };
+  }).filter(c=>c.rid);
+  save(K.db,{at:Date.now(),cards:slim});
+  return slim;
+}
+async function initDb(force){
+  const cached = load(K.db,null);
+  try{ cards = (!force && cached?.cards?.length && Date.now()-cached.at < 7*864e5) ? cached.cards : await fetchDb(); }
+  catch(e){ if(cached?.cards) cards=cached.cards; else { $('#dbStatus').textContent='Card list failed: '+e.message; $('#dbStatus').className='pill bad'; return; } }
+  byRid = Object.fromEntries(cards.map(c=>[c.rid,c]));
+  nameIndex = cards.map(c=>{ const b=baseName(c.name); return {c, base:b, toks:b.split(' ').filter(t=>t.length>=3)} });
+  $('#dbStatus').textContent = `${cards.length} cards`; $('#dbStatus').className='pill ok';
+  recompute(); render();
+}
+const numText = c => String(c.num).padStart(3,'0') + c.suffix;
+const numOf = c => typeof c.num==='number' ? numText(c) : c.num; // also for unknown cards from the sheet
+const prefer = list => list.slice().sort((a,b)=>(a.variant-b.variant)||(a.num-b.num))[0];
+
+// ---------------- Image fingerprints ----------------
+const FP = { W:160, H:224, GX:10, GY:14, ready:false, refs:null, ids:[], dim:420, twins:new Map() };
+async function loadFingerprints(){
+  try{
+    const j = await (await fetch('fp.json')).json();
+    const bin = atob(j.data), n = bin.length, refs = new Float32Array(n);
+    for(let i=0;i<n;i++){ const b=bin.charCodeAt(i); refs[i]=(b>127?b-256:b)/j.scale; }
+    Object.assign(FP,{refs, ids:j.ids, dim:j.dim, ready:true});
+  }catch(e){ console.warn('No fingerprints, OCR only', e); }
+}
+// Work canvas: guide rect plus PAD on every side, scaled so the card is 160x224.
+const PAD=0.1, WW=Math.round(FP.W*(1+2*PAD)), WH=Math.round(FP.H*(1+2*PAD));
+const work=document.createElement('canvas'); work.width=WW; work.height=WH;
+const wctx=work.getContext('2d',{willReadFrequently:true});
+const II=[new Float64Array((WW+1)*(WH+1)),new Float64Array((WW+1)*(WH+1)),new Float64Array((WW+1)*(WH+1))];
+function buildIntegral(){
+  const d=wctx.getImageData(0,0,WW,WH).data, S=WW+1;
+  for(let ch=0;ch<3;ch++){ const I=II[ch]; I.fill(0);
+    for(let y=0;y<WH;y++){ let row=0; for(let x=0;x<WW;x++){ row+=d[(y*WW+x)*4+ch]; I[(y+1)*S+x+1]=I[y*S+x+1]+row; } } }
+}
+function boxMean(I,x0,y0,x1,y1){ const S=WW+1; x0=Math.max(0,Math.round(x0)); y0=Math.max(0,Math.round(y0)); x1=Math.min(WW,Math.round(x1)); y1=Math.min(WH,Math.round(y1));
+  const a=(x1-x0)*(y1-y0); if(a<=0) return 0; return (I[y1*S+x1]-I[y0*S+x1]-I[y1*S+x0]+I[y0*S+x0])/a; }
+// Same maths as tools/build_fingerprints.py. Returns {v: normalised vector, gray: 140 cell means for motion/lock}.
+function fingerprint(x,y,w,h){
+  const {GX,GY}=FP, n=GX*GY, cells=new Float64Array(n*3), gray=new Float32Array(n);
+  for(let r=0;r<GY;r++) for(let c=0;c<GX;c++){
+    const x0=x+c*w/GX, x1=x+(c+1)*w/GX, y0=y+r*h/GY, y1=y+(r+1)*h/GY, k=(r*GX+c)*3;
+    for(let ch=0;ch<3;ch++) cells[k+ch]=boxMean(II[ch],x0,y0,x1,y1);
+    gray[r*GX+c]=(cells[k]+cells[k+1]+cells[k+2])/3;
+  }
+  { // normalise the motion/lock snapshot so camera auto-exposure changes don't look like a new card
+    let m=0,s=0; for(let i=0;i<n;i++) m+=gray[i]; m/=n; for(let i=0;i<n;i++) s+=(gray[i]-m)**2; s=Math.max(10,Math.sqrt(s/n));
+    for(let i=0;i<n;i++) gray[i]=(gray[i]-m)/s*50; }
+  const v=new Float32Array(n*3);
+  for(let ch=0;ch<3;ch++){ let m=0,s=0; for(let i=0;i<n;i++) m+=cells[i*3+ch]; m/=n;
+    for(let i=0;i<n;i++) s+=(cells[i*3+ch]-m)**2; s=Math.sqrt(s/n)+1e-6;
+    for(let i=0;i<n;i++) v[i*3+ch]=(cells[i*3+ch]-m)/s; }
+  let L=0; for(let i=0;i<v.length;i++) L+=v[i]*v[i]; L=Math.sqrt(L)+1e-9; for(let i=0;i<v.length;i++) v[i]/=L;
+  return {v,gray};
+}
+function twinsOf(idx){ // fingerprints with near-identical art (other printings of the same image)
+  if(FP.twins.has(idx)) return FP.twins.get(idx);
+  const {refs,dim}=FP, N=FP.ids.length, o=idx*dim, out=[];
+  for(let j=0;j<N;j++){ let s=0; const p=j*dim; for(let k=0;k<dim;k++) s+=refs[o+k]*refs[p+k]; if(s>=0.95) out.push(j); }
+  FP.twins.set(idx,out); return out;
+}
+function matchVec(v){
+  const {refs,dim}=FP, N=FP.ids.length; let best=-1,bi=-1; const sc=new Float32Array(N);
+  for(let j=0;j<N;j++){ let s=0; const p=j*dim; for(let k=0;k<dim;k++) s+=refs[p+k]*v[k]; sc[j]=s; if(s>best){best=s;bi=j;} }
+  // Group = same-art printings plus anything scoring almost as high; the printed code decides between them.
+  const tw=new Set(twinsOf(bi)); for(let j=0;j<N;j++) if(sc[j]>=best-0.02) tw.add(j);
+  let second=-1; for(let j=0;j<N;j++) if(!tw.has(j) && sc[j]>second) second=sc[j];
+  const rids=[...new Set([...tw].sort((a,b)=>sc[b]-sc[a]).map(j=>FP.ids[j]))].filter(r=>byRid[r]);
+  return {s:best, m:best-second, rids, key:FP.ids[bi]};
+}
+function recognize(){ // centre crop first, then a small search over offsets/scales
+  const cx=PAD*FP.W, cy=PAD*FP.H;
+  const c0=fingerprint(cx,cy,FP.W,FP.H); let best=matchVec(c0.v); best.gray=c0.gray;
+  if(best.s>=0.8 && best.m>=0.08) return best;
+  for(const dx of [-0.04,0,0.04]) for(const dy of [-0.03,0,0.03]) for(const sc of [0.95,1,1.05]){
+    if(!dx&&!dy&&sc===1) continue;
+    const w=FP.W*sc,h=FP.H*sc, f=fingerprint(cx+(FP.W-w)/2+dx*FP.W, cy+(FP.H-h)/2+dy*FP.H, w, h), r=matchVec(f.v);
+    if(r.s>best.s){ r.gray=c0.gray; best=r; }
+  }
+  return best;
+}
+
+// ---------------- OCR (fallback + telling same-art printings apart) ----------------
+let ocrReady=null, wStrip=null, wFull=null;
+function loadOcr(){
+  if(ocrReady) return ocrReady;
+  ocrReady = new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); })
+    .then(()=>Promise.all([Tesseract.createWorker('eng'),Tesseract.createWorker('eng')]))
+    .then(async ([a,b])=>{ wStrip=a; wFull=b;
+      await wStrip.setParameters({tessedit_pageseg_mode:'11', tessedit_char_whitelist:'0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ*'});
+      await wFull.setParameters({tessedit_pageseg_mode:'11'}); });
+  return ocrReady;
+}
+const ocv=document.createElement('canvas'), octx=ocv.getContext('2d',{willReadFrequently:true});
+function grabUrl(src,sx,sy,sw,sh,scale){
+  ocv.width=Math.round(sw*scale); ocv.height=Math.round(sh*scale);
+  octx.filter='grayscale(1) contrast(1.4)'; octx.drawImage(src,sx,sy,sw,sh,0,0,ocv.width,ocv.height); octx.filter='none';
+  return ocv.toDataURL('image/png');
+}
+function parseCode(text){
+  const raw=(text||'').toUpperCase().replace(/[|\\]/g,'/');
+  const a=/([A-Z0]{3})\s*([\dO]{3})\s*([*A-Z]?)\s*\/\s*([\dO]{2,3})/.exec(raw);
+  if(a) return {code:a[1].replace(/0/g,'O'), num:+a[2].replace(/O/g,'0'), suf:a[3], size:+a[4].replace(/O/g,'0')};
+  const b=/(\d{1,3})\s*([*A-Z]?)\s*\/\s*(\d{2,3})/.exec(raw.replace(/O/g,'0'));
+  return b ? {num:+b[1], suf:b[2], size:+b[3]} : null;
+}
+function pickByCode(list, pc){
+  if(!pc) return null;
+  let cand=list.filter(c=>c.num===pc.num && (pc.code ? c.code===pc.code : c.setSize===pc.size));
+  const bs=cand.filter(c=>c.suffix.toUpperCase()===pc.suf); if(bs.length) cand=bs;
+  return cand.length ? prefer(cand) : null;
+}
+async function ocrStrip(src,g){
+  await loadOcr();
+  const r=await wStrip.recognize(grabUrl(src, g.x, g.y+g.h*0.86, g.w, g.h*0.14, Math.max(1,2400/g.w)));
+  return r.data.text;
+}
+function lev(a,b){ if(a===b) return 0; const m=a.length,n=b.length; if(Math.abs(m-n)>2) return 9;
+  let p=Array.from({length:n+1},(_,i)=>i); for(let i=1;i<=m;i++){ const q=[i]; for(let j=1;j<=n;j++) q[j]=Math.min(p[j]+1,q[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1)); p=q } return p[n]; }
+async function ocrFull(src,g){ // last resort when the image is not recognised
+  await loadOcr();
+  const [a,b]=await Promise.all([wFull.recognize(grabUrl(src,g.x,g.y,g.w,g.h,Math.min(1,1100/g.h))), ocrStrip(src,g)]);
+  const byCode=pickByCode(cards, parseCode(b+' '+a.data.text)); if(byCode) return byCode;
+  const words=norm(a.data.text).split(' ').filter(w=>w.length>=3), ws=new Set(words);
+  let best=null;
+  for(const e of nameIndex){ if(!e.toks.length) continue; let hit=0,tot=0;
+    for(const t of e.toks){ tot+=t.length; if(ws.has(t)){hit+=t.length;continue} const tol=t.length>=8?2:t.length>=5?1:0;
+      if(tol && words.some(w=>Math.abs(w.length-t.length)<=tol && lev(w,t)<=tol)) hit+=t.length*0.9; }
+    const s=hit/tot; if(s>=0.8 && tot>=5 && (!best || s>best.s || (s===best.s && tot>best.tot))) best={s,tot,base:e.base}; }
+  return best ? prefer(cards.filter(c=>baseName(c.name)===best.base)) : null;
+}
+
+// ---------------- Camera loop ----------------
+const video=$('#video');
+let stream=null, running=false, paused=false, auto=true, foil=false;
+let prevGray=null, stillN=0, evaluated=false, busy=false, lastEval=null, lockGray=null, armed=true, lockRid=null, unknownSince=0, pending=null;
+
+function guideRect(vw,vh){ const h=Math.min(vh*cfg.guide, vw*0.95*88/63), w=h*63/88; return {x:(vw-w)/2,y:(vh-h)/2,w,h}; }
+function layoutGuide(){
+  const vw=video.videoWidth, vh=video.videoHeight; if(!vw) return;
+  const box=$('#camWrap').getBoundingClientRect(), sc=Math.min(box.width/vw,box.height/vh), ox=(box.width-vw*sc)/2, oy=(box.height-vh*sc)/2, g=guideRect(vw,vh);
+  Object.assign($('#guide').style,{left:ox+g.x*sc+'px',top:oy+g.y*sc+'px',width:g.w*sc+'px',height:g.h*sc+'px'});
+}
+addEventListener('resize',layoutGuide);
+async function listCams(){
+  const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+  $('#camSel').innerHTML=devs.map((d,i)=>`<option value="${esc(d.deviceId)}">${esc(d.label||'Camera '+(i+1))}</option>`).join('');
+}
+async function startCam(){
+  if(!navigator.mediaDevices?.getUserMedia) throw new Error('camera needs HTTPS or localhost');
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  const id=$('#camSel').value;
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{...(id?{deviceId:{exact:id}}:{facingMode:{ideal:'environment'}}),width:{ideal:1920},height:{ideal:1080}}});
+  video.srcObject=stream; await video.play();
+  const track=stream.getVideoTracks()[0];
+  try{ const caps=track.getCapabilities?.()||{}; if(caps.focusMode?.includes('continuous')) await track.applyConstraints({advanced:[{focusMode:'continuous'}]}); }catch{}
+  await listCams(); $('#camSel').value=track.getSettings().deviceId||'';
+  layoutGuide(); $('#camBtn').textContent='Restart camera'; $('#camBtn').classList.remove('on');
+  setTimeout(()=>loadOcr().catch(()=>{}),1500); // warm up OCR in the background
+  if(!running){ running=true; requestAnimationFrame(tick); }
+}
+$('#camBtn').onclick=()=>startCam().catch(e=>setStatus('Camera error: '+e.message));
+$('#camSel').onchange=()=>stream&&startCam().catch(e=>setStatus('Camera error: '+e.message));
+
+let lastTick=0;
+function tick(t){
+  requestAnimationFrame(tick);
+  if(t-lastTick<55) return; lastTick=t;   // ~18 checks per second
+  if(paused||!video.videoWidth||!cards.length) return;
+  step(video, video.videoWidth, video.videoHeight);
+}
+// One frame: motion check, then recognise once the card is still. Exposed for testing with any image source.
+function step(src,vw,vh){
+  const g=guideRect(vw,vh);
+  wctx.drawImage(src, g.x-PAD*g.w, g.y-PAD*g.h, g.w*(1+2*PAD), g.h*(1+2*PAD), 0,0,WW,WH);
+  buildIntegral();
+  const {gray}=fingerprint(PAD*FP.W,PAD*FP.H,FP.W,FP.H);
+  const motion=prevGray?meanDiff(gray,prevGray):99; prevGray=gray;
+  const lockDiff=lockGray?meanDiff(gray,lockGray):99;
+  if(lockDiff>18) armed=true;              // the scene clearly changed since the last add
+  if(motion>cfg.still){ stillN=0; evaluated=false; lastEval=null; guideState('moving'); return; }
+  if(++stillN<2 || evaluated || busy) return;
+  if(!FP.ready){ evaluated=true; fallbackOcr(src,g); return; }
+  const r=recognize();
+  if(r.s<0.5){ guideState(''); lastEval=null; setStatus('Waiting for a card…');
+    if(r.s<0.35){ unknownSince=0; return; }   // nothing card-like in view: don't read random text (playmats)
+    if(!unknownSince) unknownSince=performance.now(); return maybeOcr(src,g); }
+  const strong=r.s>=0.8&&r.m>=0.08, medium=r.s>=0.65&&r.m>=0.05;
+  const agree=lastEval&&lastEval.key===r.key; lastEval=r;
+  // s>=0.9: the art is certain but another card looks almost the same; the printed code decides below.
+  if(!(strong||(medium&&agree)||(r.s>=0.9&&agree))){ if(!unknownSince) unknownSince=performance.now(); setStatus(`Reading… (${(r.s*100|0)}%)`); return maybeOcr(src,g); }
+  unknownSince=0; evaluated=true;
+  const list=r.rids.map(x=>byRid[x]);
+  if(list.length===1) return decide(list[0], gray, `image ${(r.s*100|0)}%`);
+  // Same art in several printings: read the printed code to pick the right one.
+  busy=true; setStatus(`Checking printing of ${list[0].name}…`);
+  const timeout=new Promise(res=>setTimeout(()=>res(''),1500));
+  Promise.race([ocrStrip(src,g),timeout]).then(txt=>{
+    const pick=pickByCode(list,parseCode(txt));
+    if(pick) return decide(pick, gray, 'image + code');
+    const names=[...new Set(list.map(c=>baseName(c.name)))];
+    if(names.length>1){ guideState(''); setStatus(`Not sure: ${list.slice(0,3).map(c=>c.name).join(' / ')}. Adjust the card or use search.`); evaluated=false; return; }
+    decide(prefer(list), gray, 'image, printing guessed', true);
+  }).catch(()=>decide(prefer(list),gray,'image, printing guessed',true)).finally(()=>busy=false);
+}
+function maybeOcr(src,g){ // image not recognised for a while: try reading text instead
+  if(unknownSince && performance.now()-unknownSince>900 && !busy){ evaluated=true; unknownSince=0; fallbackOcr(src,g); }
+}
+function fallbackOcr(src,g){
+  busy=true; const gray=prevGray;
+  ocrFull(src,g).then(c=>{ if(c) decide(c,gray,'text'); else setStatus('Not recognised. Try better light, or search below.'); })
+    .catch(e=>setStatus('OCR error: '+e.message)).finally(()=>busy=false);
+}
+function meanDiff(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
+function decide(card, gray, how, guessed){
+  guideState('hit');
+  const sameScene = lockGray && meanDiff(gray,lockGray) < 4;
+  if(!armed || (card.rid===lockRid && (!cfg.stack || sameScene))){
+    setStatus(`✓ ${card.name} · ${card.code} ${numText(card)} (counted; place the next card)`); return; }
+  lockGray=gray; lockRid=card.rid; armed=false;
+  if(auto){ addCard(card.rid, foil, 1); setStatus(`✓ Added ${card.name} · ${card.code} ${numText(card)} [${how}]${guessed?' · check printing':''}`); }
+  else { pending=card.rid; showLast(card,foil); $('#addBtn').style.display=''; setStatus(`Detected ${card.name}. Press Enter or “Add”.`); }
+  if(guessed) beep(440,0.12);
+}
+const setStatus=t=>$('#status').textContent=t;
+const guideState=s=>{ const el=$('#guide'); el.classList.toggle('moving',s==='moving'); el.classList.toggle('hit',s==='hit'); };
+
+// ---------------- Log, inventory, batches ----------------
+// Each entry: {opId, ts, device, rid, foil, batch, qty, name?, code?, num?}
+let log=load(K.log,[]), pend=load(K.pending,[]), undoStack=[];
+let inv=new Map(), loc=new Map(), batchTotals=new Map(), lastAdd=null;
+let batch=load(K.batch,null), nextBatchCode=null;  // {code,size}
+function recompute(){
+  inv=new Map(); loc=new Map(); batchTotals=new Map();
+  const seen=new Set(log.map(e=>e.opId).filter(Boolean));
+  for(const e of log.concat(pend.filter(p=>!seen.has(p.opId)))){
+    const k=e.rid+'|'+(e.foil?1:0);
+    inv.set(k,(inv.get(k)||0)+e.qty);
+    const b=e.batch||'—'; if(!loc.has(k)) loc.set(k,new Map()); const m=loc.get(k); m.set(b,(m.get(b)||0)+e.qty);
+    batchTotals.set(b,(batchTotals.get(b)||0)+e.qty);
+  }
+  for(const [k,q] of inv) if(q<=0){ inv.delete(k); loc.delete(k); }
+}
+function batchesOf(k){ const m=loc.get(k); return m?[...m].filter(([,q])=>q>0):[]; }
+function fmtCode(n){ const b=cfg.batch; return String(b.prefix??'')+String(n).padStart(b.digits||4,'0'); }
+async function reserveBatchCode(){
+  if(cfg.syncUrl){ try{ const r=await api({action:'nextBatch'}); if(r.settings) cfg.batch=r.settings; saveCfg(); return r.code; }catch(e){ console.warn('nextBatch offline',e); } }
+  const code=fmtCode(cfg.batch.next)+(cfg.syncUrl?'-'+cfg.device:''); cfg.batch.next++; saveCfg(); return code;
+}
+async function startBatch(code){
+  batch={code: code || nextBatchCode || await reserveBatchCode(), size: cfg.batch.batchSize}; nextBatchCode=null;
+  save(K.batch,batch); renderBatch(); return batch;
+}
+function batchCount(){ return batch ? (batchTotals.get(batch.code)||0) : 0; }
+function opFor(card, f, qty, b){
+  return { opId:`${cfg.device}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`, ts:new Date().toISOString(), device:cfg.device,
+    rid:card.rid, name:card.name, setName:card.setName, code:card.code, num:numText(card), foil:!!f, batch:b, qty, rarity:card.rarity, type:card.type };
+}
+let batchLock=Promise.resolve();
+function addCard(rid, f, qty, batchCode){ // serialised; resolves to the op it logged
+  const p=batchLock.then(()=>addCardNow(rid,f,qty,batchCode)); batchLock=p.catch(e=>console.error(e)); return p;
+}
+async function addCardNow(rid, f, qty, batchCode){
+  const card=byRid[rid]; if(!card) return;
+  const k=rid+'|'+(f?1:0);
+  if(qty>0){
+    if(batchCode==null){ if(!batch || batchCount()>=batch.size) await startBatch(); batchCode=batch.code; }
+  } else {
+    if(batchCode==null){ // remove from the current batch if it has one, else the batch holding the most copies
+      const bs=batchesOf(k); if(!bs.length) return;
+      batchCode=(bs.find(([b])=>b===batch?.code)||bs.sort((a,b)=>b[1]-a[1])[0])[0];
+    }
+    if(batchCode==='—') batchCode='';
+  }
+  const op=opFor(card,f,qty,batchCode);
+  pend.push(op); save(K.pending,pend);
+  if(qty>0){ undoStack.push(op); lastAdd={rid,f}; beep(); flash(); }
+  recompute(); render(); showLast(card,f); kickSync();
+  if(qty>0 && batch && batchCode===batch.code){
+    const n=batchCount();
+    if(n>=batch.size-5 && !nextBatchCode && cfg.syncUrl) reserveBatchCode().then(c=>nextBatchCode=c).catch(()=>{});
+    if(n>=batch.size){ const done=batch.code; await startBatch(); showBanner(`Batch ${done} is full (${n}). Set it aside and label it. Now filling ${batch.code}.`); beep(660,0.1); setTimeout(()=>beep(990,0.15),130); }
+  }
+  return op;
+}
+function undo(){
+  const op=undoStack.pop(); if(!op) return;
+  const i=pend.findIndex(p=>p.opId===op.opId);
+  if(i>=0 && !pend[i].sent){ pend.splice(i,1); save(K.pending,pend); recompute(); render(); }
+  else addCard(op.rid, op.foil, -op.qty, op.batch);
+  lockRid=null; lockGray=null; armed=true; setStatus(`Undid ${op.name}.`);
+  showLast(byRid[op.rid],op.foil);
+}
+
+// ---------------- Sync with Google Sheet ----------------
+let syncP=null, syncTimer=null, lastSync=0, syncErr='';
+async function api(body){
+  if(!cfg.syncUrl) throw new Error('no sync URL');
+  const r=await fetch(cfg.syncUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),redirect:'follow'});
+  const j=await r.json(); if(!j.ok) throw new Error(j.error||'sync failed'); return j;
+}
+// Keep log entries small (localStorage holds ~5 MB). Names are looked up from the card list; kept only for unknown cards.
+function rowToEntry(r){
+  const e={opId:String(r[2]||''),rid:String(r[3]),foil:String(r[8]).toLowerCase()==='foil',batch:String(r[9]||''),qty:Number(r[10])||0};
+  if(!byRid[e.rid]) Object.assign(e,{name:r[4],setName:r[5],code:r[6],num:String(r[7])});
+  return e;
+}
+function sync(full){
+  if(!cfg.syncUrl) return Promise.resolve();
+  if(syncP) return full ? syncP.then(()=>sync(true)) : syncP;
+  return syncP=syncOnce(full).finally(()=>{ syncP=null; renderSync(); });
+}
+async function syncOnce(full){
+  try{
+    const ops=pend.slice(0,300);
+    if(ops.length){
+      // Mark as sent before sending: if the reply is lost, undo must log a -1 instead of deleting locally.
+      if(ops.some(o=>!o.sent)){ ops.forEach(o=>o.sent=true); save(K.pending,pend); }
+      await api({action:'push',ops});
+    }
+    let p=await api({action:'pull',since:full?0:log.length});
+    // Rows were deleted or inserted in the sheet by hand: our position is wrong, reload everything.
+    if(p.since>0 && p.anchor!==log[p.since-1]?.opId) p=await api({action:'pull',since:0});
+    const rows=p.rows.map(rowToEntry);
+    log = p.since===0 ? rows : log.concat(rows);
+    const have=new Set(log.map(e=>e.opId));
+    pend=pend.filter(o=>!have.has(o.opId));
+    save(K.log,log); save(K.pending,pend);
+    if(p.settings){ cfg.batch=p.settings; saveCfg(); }
+    if(batch) { batch.size=cfg.batch.batchSize; save(K.batch,batch); }
+    lastSync=Date.now(); syncErr='';
+    recompute(); render();
+  }catch(e){ syncErr=e.message; }
+}
+function kickSync(){ renderSync(); clearTimeout(syncTimer); syncTimer=setTimeout(()=>sync(),800); }
+setInterval(()=>{ if(pend.length) sync(); },5000);
+setInterval(()=>sync(),20000);
+addEventListener('focus',()=>sync()); addEventListener('online',()=>sync());
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) sync(); });
+function renderSync(){
+  const el=$('#syncStatus');
+  if(storageErr){ el.textContent='Device storage full'; el.className='pill bad'; el.title='This device could not save its local copy. Sync to the sheet still works; export a CSV and use “Clear local data”.'; return; }
+  if(!cfg.syncUrl){ el.textContent=pend.length?`Local only · ${pend.length} unsynced`:'Local only'; el.className='pill'; return; }
+  if(syncErr){ el.textContent=`Offline · ${pend.length} waiting`; el.className='pill bad'; el.title=syncErr; return; }
+  el.textContent = pend.length ? `Syncing ${pend.length}…` : `Synced ${lastSync?new Date(lastSync).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):''}`;
+  el.className = pend.length ? 'pill warn' : 'pill ok'; el.title='';
+}
+
+// ---------------- Rendering ----------------
+function render(){ renderInv(); renderBatch(); renderSync(); }
+function renderBatch(){
+  const n=batchCount(), size=batch?.size||cfg.batch.batchSize;
+  $('#batchCode').textContent=batch?.code||'—';
+  $('#batchCount').textContent=`${n} / ${size}`;
+  $('#batchBar div').style.width=Math.min(100,n/size*100)+'%';
+  const l=$('#sheetLink'); if(cfg.sheetUrl){ l.href=cfg.sheetUrl; l.style.display=''; } else l.style.display='none';
+}
+function cardOf(k){ const [rid]=k.split('|'); return byRid[rid] || (()=>{ const e=log.find(x=>x.rid===rid); return e?{rid,name:e.name||rid,code:e.code||'',num:e.num||'',suffix:'',setName:e.setName||'',rarity:'',type:'',img:''}:{rid,name:rid,code:'',num:'',suffix:'',setName:'',rarity:'',type:'',img:''}; })(); }
+function renderInv(){
+  const f=norm($('#filter').value);
+  let rows=[...inv].map(([k,q])=>({k,q,c:cardOf(k),foil:k.endsWith('|1')}));
+  const total=rows.reduce((s,r)=>s+r.q,0);
+  $('#invSummary').textContent=`Inventory: ${total} cards · ${rows.length} unique · ${[...batchTotals.values()].filter(q=>q>0).length} batches`;
+  if(f) rows=rows.filter(r=>norm(`${r.c.name} ${r.c.code} ${r.c.num} ${r.c.rarity} ${batchesOf(r.k).map(b=>b[0]).join(' ')}`).includes(f));
+  rows.sort((a,b)=>a.c.code.localeCompare(b.c.code)||(+a.c.num||0)-(+b.c.num||0)||a.foil-b.foil);
+  const shown=rows.slice(0,400);
+  $('#inv').innerHTML=shown.map(r=>`<tr><td class="qty"><button data-k="${esc(r.k)}" data-d="-1">−</button> <b>${r.q}</b> <button data-k="${esc(r.k)}" data-d="1">+</button></td>
+    <td>${esc(r.c.name)} ${r.foil?'<span class="foil">★</span>':''}</td><td>${esc(r.c.code)}</td><td>${esc(numOf(r.c))}</td><td class="hide-sm">${esc(r.c.rarity)}</td>
+    <td>${batchesOf(r.k).map(([b,q])=>esc(b)+(q>1?' ×'+q:'')).join(', ')}</td></tr>`).join('')
+    + (rows.length>shown.length?`<tr><td colspan="6" class="muted">${rows.length-shown.length} more. Use the filter.</td></tr>`:'');
+}
+$('#inv').onclick=e=>{ const b=e.target.closest('button'); if(!b) return; const [rid,fl]=b.dataset.k.split('|'); addCard(rid, fl==='1', +b.dataset.d); };
+$('#filter').oninput=renderInv;
+function showLast(c,f=foil){
+  if(!c) return;
+  const k=c.rid+'|'+(f?1:0), qty=inv.get(k)||0, where=batchesOf(k);
+  const variants=cards.filter(x=>baseName(x.name)===baseName(c.name));
+  $('#last').innerHTML=`<img src="${esc(c.img)}" alt="">
+    <div style="flex:1;min-width:0"><h2>${esc(c.name)} ${f?'<span class="foil">★ foil</span>':''}</h2>
+    <div class="muted">${esc(c.setName)} · ${esc(c.code)} ${numText(c)}/${c.setSize} · ${esc(c.rarity)} · ${esc(c.type)}</div>
+    <div style="font-size:20px;margin:6px 0">Owned: <b>${qty}</b></div>
+    <div class="muted">In: ${where.length?where.map(([b,q])=>`<b style="color:var(--text)">${esc(b)}</b>${q>1?' ×'+q:''}`).join(', '):'—'}</div>
+    <div class="row" style="margin-top:6px"><button data-a="minus">−1</button><button data-a="plus">+1</button><button data-a="foil">${f?'Not foil':'Is foil'}</button></div>
+    ${variants.length>1?`<div class="row" style="margin-top:6px"><select id="variantSel" style="max-width:100%">${variants.map(v=>`<option value="${esc(v.rid)}" ${v.rid===c.rid?'selected':''}>${esc(v.code)} ${numText(v)} · ${esc(v.name)} (${esc(v.rarity)})</option>`).join('')}</select></div>`:''}</div>`;
+  const L=$('#last');
+  L.querySelector('[data-a=plus]').onclick=()=>addCard(c.rid,f,1);
+  L.querySelector('[data-a=minus]').onclick=()=>addCard(c.rid,f,-1);
+  // Swap one copy to foil / another printing. The new copy goes into the batch the old one was taken from.
+  const swap=async(rid2,f2)=>{ const last=undoStack.at(-1), b=last&&last.rid===c.rid&&last.foil===!!f?last.batch:undefined;
+    const rm=inv.get(k)?await addCard(c.rid,f,-1,b):null; await addCard(rid2,f2,1,rm?rm.batch:undefined); };
+  L.querySelector('[data-a=foil]').onclick=()=>inv.get(k)?swap(c.rid,!f):showLast(c,!f);
+  const vs=$('#variantSel'); if(vs) vs.onchange=async()=>{ await swap(vs.value,f); lockRid=vs.value; };
+}
+let banTimer; function showBanner(t){ const b=$('#banner'); b.textContent=t; b.style.display='block'; clearTimeout(banTimer); banTimer=setTimeout(()=>b.style.display='none',6000); }
+
+// ---------------- Search ----------------
+let resList=[], resSel=0;
+$('#search').oninput=()=>{
+  const q=norm($('#search').value); if(!q){ $('#results').innerHTML=''; resList=[]; return; }
+  const parts=q.split(' '), num=parts.find(p=>/^\d+$/.test(p)), code=parts.find(p=>/^[a-z]{2,4}$/.test(p)&&cards.some(c=>c.code.toLowerCase()===p));
+  const words=parts.filter(p=>p!==num&&p!==code);
+  resList=cards.filter(c=>(!num||c.num===+num)&&(!code||c.code.toLowerCase()===code)&&words.every(w=>norm(c.name).includes(w)))
+    .sort((a,b)=>a.variant-b.variant||a.num-b.num).slice(0,40);
+  resSel=0; drawResults();
+};
+function drawResults(){
+  $('#results').innerHTML=resList.map((c,i)=>{ const k0=c.rid+'|0', k1=c.rid+'|1', q=(inv.get(k0)||0)+(inv.get(k1)||0), where=[...batchesOf(k0),...batchesOf(k1)].map(b=>b[0]);
+    return `<div class="res ${i===resSel?'sel':''}" data-i="${i}"><img src="${esc(c.img)}" alt="" loading="lazy"><span style="flex:1">${esc(c.name)}<br><span class="muted">${esc(c.code)} ${numText(c)} · ${esc(c.rarity)}</span></span><span class="muted" style="text-align:right">${q?`own ${q}<br>${esc([...new Set(where)].join(', '))}`:''}</span></div>`; }).join('');
+}
+$('#results').onclick=e=>{ const r=e.target.closest('.res'); if(r) addCard(resList[+r.dataset.i].rid, foil, 1); };
+$('#search').onkeydown=e=>{
+  if(e.key==='ArrowDown'){ resSel=Math.min(resSel+1,resList.length-1); drawResults(); e.preventDefault(); }
+  else if(e.key==='ArrowUp'){ resSel=Math.max(resSel-1,0); drawResults(); e.preventDefault(); }
+  else if(e.key==='Enter'&&resList[resSel]){ addCard(resList[resSel].rid,foil,1); $('#search').select(); }
+  else if(e.key==='Escape') $('#search').blur();
+};
+
+// ---------------- Controls ----------------
+const setFoil=v=>{ foil=v; $('#foilBtn').textContent=`Foil: ${v?'on':'off'}`; $('#foilBtn').classList.toggle('on',v); };
+const setPause=v=>{ paused=v; $('#pauseBtn').textContent=v?'Resume':'Pause'; $('#pauseBtn').classList.toggle('on',v); if(v) setStatus('Paused.'); };
+$('#foilBtn').onclick=()=>setFoil(!foil);
+$('#pauseBtn').onclick=()=>setPause(!paused);
+$('#autoBtn').onclick=()=>{ auto=!auto; $('#autoBtn').textContent=`Auto-add: ${auto?'on':'off'}`; $('#autoBtn').classList.toggle('on',auto); if(auto) $('#addBtn').style.display='none'; };
+$('#addBtn').onclick=()=>{ if(pending){ addCard(pending,foil,1); pending=null; } };
+$('#newBatchBtn').onclick=async()=>{ await startBatch(); setStatus(`Started batch ${batch.code}.`); };
+$('#setBatchBtn').onclick=async()=>{ const c=prompt('Batch code to fill (e.g. BINDER-3):', batch?.code||''); if(c&&c.trim()) await startBatch(c.trim()); };
+addEventListener('keydown',e=>{
+  if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)||$('#settings').open) return;
+  if(e.key===' '&&lastAdd){ e.preventDefault(); addCard(lastAdd.rid,lastAdd.f,1); }
+  else if(e.key==='z'||e.key==='Z') undo();
+  else if(e.key==='f'||e.key==='F') setFoil(!foil);
+  else if(e.key==='p'||e.key==='P') setPause(!paused);
+  else if(e.key==='/'){ e.preventDefault(); $('#search').focus(); }
+  else if(e.key==='Enter'&&pending){ addCard(pending,foil,1); pending=null; }
+});
+
+// ---------------- Settings dialog ----------------
+const dlg=$('#settings'); let guideBefore=cfg.guide;
+$('#settingsBtn').onclick=()=>{
+  $('#sSync').value=cfg.syncUrl; $('#sSheet').value=cfg.sheetUrl; $('#sDevice').value=cfg.device;
+  $('#sBatchSize').value=cfg.batch.batchSize; $('#sPrefix').value=cfg.batch.prefix; $('#sDigits').value=cfg.batch.digits; $('#sNext').value=cfg.batch.next;
+  $('#sGuide').value=cfg.guide; $('#sGuideVal').textContent=Math.round(cfg.guide*100)+'%'; $('#sStill').value=cfg.still; $('#sStillVal').textContent=cfg.still; $('#sStack').checked=cfg.stack;
+  $('#qr').style.display='none'; $('#qrUrl').textContent=''; guideBefore=cfg.guide; dlg.returnValue=''; dlg.showModal();
+};
+$('#sGuide').oninput=e=>{ $('#sGuideVal').textContent=Math.round(e.target.value*100)+'%'; cfg.guide=+e.target.value; layoutGuide(); };
+$('#sStill').oninput=e=>$('#sStillVal').textContent=e.target.value;
+$('#saveSettings').onclick=async()=>{
+  const urlChanged=cfg.syncUrl!==$('#sSync').value.trim();
+  Object.assign(cfg,{syncUrl:$('#sSync').value.trim(), sheetUrl:$('#sSheet').value.trim(), device:$('#sDevice').value.trim()||cfg.device, guide:+$('#sGuide').value, still:+$('#sStill').value, stack:$('#sStack').checked});
+  const nb={batchSize:Math.max(1,+$('#sBatchSize').value||50), prefix:$('#sPrefix').value, digits:Math.max(1,+$('#sDigits').value||4), next:Math.max(1,+$('#sNext').value||1)};
+  const batchChanged=JSON.stringify(nb)!==JSON.stringify(cfg.batch);
+  cfg.batch=nb; saveCfg(); layoutGuide();
+  if(batch){ batch.size=nb.batchSize; save(K.batch,batch); }
+  if(urlChanged){ log=[]; save(K.log,log); }
+  try{ await pushBatchSettings(nb,urlChanged,batchChanged); }catch(e){ alert('Could not save batch settings to the sheet: '+e.message); }
+  render(); sync(true);
+};
+// Send batch settings to the sheet. On first connect, never let the sheet's counter fall behind
+// batch numbers this device already used offline (two boxes would get the same code).
+async function pushBatchSettings(nb,urlChanged,batchChanged){
+  if(!cfg.syncUrl) return;
+  if(!urlChanged){ if(batchChanged) await api({action:'saveSettings',settings:nb}); return; }
+  const s=(await api({})).settings;
+  const up = batchChanged ? {...nb, next:Math.max(nb.next,s.next)} : nb.next>s.next ? {next:nb.next} : null;
+  if(up) await api({action:'saveSettings',settings:up});
+}
+dlg.addEventListener('close',()=>{ if(dlg.returnValue!=='save') cfg.guide=guideBefore; layoutGuide(); });
+$('#qrBtn').onclick=()=>{
+  const url=`${location.origin}${location.pathname}#sync=${encodeURIComponent($('#sSync').value.trim())}${$('#sSheet').value.trim()?'&sheet='+encodeURIComponent($('#sSheet').value.trim()):''}`;
+  const el=$('#qr'); el.innerHTML=''; el.style.display='inline-block'; new QRCode(el,{text:url,width:220,height:220,correctLevel:QRCode.CorrectLevel.L});
+  $('#qrUrl').textContent=location.protocol==='https:'?url:'This page is not on HTTPS, so phones will block the camera. Host it first (see README).';
+};
+$('#resyncBtn').onclick=()=>{ if(!cfg.syncUrl) return alert('Add the web app URL first.'); sync(true).then(()=>alert('Re-synced from the sheet.')); };
+$('#clearBtn').onclick=()=>{ if(confirm(`Clear this device's local copy? ${pend.length} unsynced change(s) will be lost. The Google Sheet is not touched.`)){ log=[]; pend=[]; batch=null; save(K.log,log); save(K.pending,pend); save(K.batch,null); recompute(); render(); } };
+const csvCell=v=>{ v=String(v??''); return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v; };
+$('#exportBtn').onclick=()=>{
+  const lines=[['Quantity','Name','Set','Set Code','Number','Foil','Rarity','Type','Batch','Card ID','TCGplayer Id'].join(',')];
+  for(const [k] of inv){ const c=cardOf(k), f=k.endsWith('|1');
+    for(const [b,q] of batchesOf(k)) lines.push([q,c.name,c.setName,c.code,numOf(c),f?'Foil':'',c.rarity,c.type,b,c.rid,c.tcg||''].map(csvCell).join(',')); }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));
+  a.download=`riftbound-inventory-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+};
+
+// ---------------- Feedback ----------------
+let actx; function beep(f=880,d=0.07){ try{ actx=actx||new AudioContext(); const o=actx.createOscillator(),g=actx.createGain(); o.frequency.value=f; g.gain.value=0.08; o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime+d);}catch{} }
+function flash(){ const f=$('#flash'); f.style.opacity=.15; setTimeout(()=>f.style.opacity=0,110); }
+
+// ---------------- Start ----------------
+(async()=>{
+  // one-time migration from the first version's inventory
+  const old=load('rb_inventory_v1',null), oldDb=load('rb_cards_v1',null);
+  await Promise.all([initDb(false), loadFingerprints()]);
+  if(old && oldDb?.cards && !log.length && !pend.length){
+    const idMap=Object.fromEntries((oldDb.cards||[]).map(c=>[c.id,c.rid]));
+    for(const [k,q] of Object.entries(old)){ const [id,f]=k.split('|'), c=byRid[idMap[id]]; if(c&&q>0) pend.push(opFor(c,f==='1',q,'UNSORTED')); }
+    save(K.pending,pend); localStorage.removeItem('rb_inventory_v1'); recompute(); render();
+  }
+  if(hashConnected) await pushBatchSettings(cfg.batch,true,false).catch(()=>{});
+  renderBatch(); sync();
+})();
+// Test hook for tests/test.html
+window.__rb = { step, recognize, matchVec, parseCode, pickByCode, addCard, undo, sync, startBatch, pushBatchSettings, meanDiff,
+  get FP(){return FP}, get cfg(){return cfg}, get cards(){return cards}, get byRid(){return byRid}, get prevGray(){return prevGray},
+  get state(){return {log,pend,batch,inv}}, reset(){ log=[]; pend=[]; batch=null; undoStack=[]; lockGray=null; lockRid=null; armed=true; recompute(); } };
+</script>
+</body>
+</html>
