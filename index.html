@@ -148,9 +148,8 @@ dialog h3{margin:16px 0 4px;font-size:14px;color:var(--acc)}
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
-const API = 'https://api.riftcodex.com/cards';
 const NS = new URLSearchParams(location.search).has('test') ? 'rb_test_' : 'rb_'; // tests/test.html uses separate storage
-const K = { db:NS+'cards_v2', log:NS+'log_v2', pending:NS+'pending_v2', cfg:NS+'cfg_v2', batch:NS+'batch_v2' };
+const K = { log:NS+'log_v2', pending:NS+'pending_v2', cfg:NS+'cfg_v2', batch:NS+'batch_v2' };
 let storageErr=false;
 const load = (k,d) => { try{ const v=JSON.parse(localStorage.getItem(k)); return v ?? d }catch{ return d } };
 const save = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); return true }catch(e){ console.warn('storage', e); storageErr=true; return false } };
@@ -171,26 +170,11 @@ let hashConnected=false;
 
 // ---------------- Card database ----------------
 let cards=[], byRid={}, nameIndex=[];
-async function fetchDb(){
-  $('#dbStatus').textContent='Downloading cards…';
-  const get = p => fetch(`${API}?size=100&page=${p}`).then(r=>{ if(!r.ok) throw new Error(r.status); return r.json() });
-  const first = await get(1);
-  const rest = await Promise.all(Array.from({length:first.pages-1},(_,i)=>get(i+2)));
-  const items = first.items.concat(...rest.map(p=>p.items));
-  const slim = items.map(c=>{
-    const m = /^([a-z]+)-(\d+)([^-]*)-(\d+)$/i.exec(c.riftbound_id||'')||[];
-    return { rid:c.riftbound_id, name:c.name, setName:c.set?.label||'', code:(m[1]||c.set?.set_id||'').toUpperCase(),
-      num:c.collector_number, suffix:m[3]||'', setSize:+m[4]||0, rarity:c.classification?.rarity||'', type:c.classification?.type||'',
-      domain:(c.classification?.domain||[]).join('/'), img:c.media?.image_url||'', tcg:c.tcgplayer_id||'',
-      variant:!!(c.metadata?.alternate_art||c.metadata?.overnumbered||c.metadata?.signature) };
-  }).filter(c=>c.rid);
-  save(K.db,{at:Date.now(),cards:slim});
-  return slim;
-}
-async function initDb(force){
-  const cached = load(K.db,null);
-  try{ cards = (!force && cached?.cards?.length && Date.now()-cached.at < 7*864e5) ? cached.cards : await fetchDb(); }
-  catch(e){ if(cached?.cards) cards=cached.cards; else { $('#dbStatus').textContent='Card list failed: '+e.message; $('#dbStatus').className='pill bad'; return; } }
+// cards.json is built with fp.json by tools/build_fingerprints.py, so the card list always matches the fingerprints.
+async function initDb(){
+  try{ const r=await fetch('cards.json'); if(!r.ok) throw new Error(r.status); cards=await r.json(); }
+  catch(e){ $('#dbStatus').textContent='Card list failed: '+e.message; $('#dbStatus').className='pill bad'; return; }
+  try{ localStorage.removeItem(NS+'cards_v2'); }catch{} // old cached card list, no longer used
   byRid = Object.fromEntries(cards.map(c=>[c.rid,c]));
   nameIndex = cards.map(c=>{ const b=baseName(c.name); return {c, base:b, toks:b.split(' ').filter(t=>t.length>=3)} });
   $('#dbStatus').textContent = `${cards.length} cards`; $('#dbStatus').className='pill ok';
@@ -676,7 +660,7 @@ function flash(){ const f=$('#flash'); f.style.opacity=.15; setTimeout(()=>f.sty
 (async()=>{
   // one-time migration from the first version's inventory
   const old=load('rb_inventory_v1',null), oldDb=load('rb_cards_v1',null);
-  await Promise.all([initDb(false), loadFingerprints()]);
+  await Promise.all([initDb(), loadFingerprints()]);
   if(old && oldDb?.cards && !log.length && !pend.length){
     const idMap=Object.fromEntries((oldDb.cards||[]).map(c=>[c.id,c.rid]));
     for(const [k,q] of Object.entries(old)){ const [id,f]=k.split('|'), c=byRid[idMap[id]]; if(c&&q>0) pend.push(opFor(c,f==='1',q,'UNSORTED')); }

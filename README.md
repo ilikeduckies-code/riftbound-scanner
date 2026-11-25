@@ -6,7 +6,7 @@ Scan Riftbound cards with a webcam or phone camera, count them in chaos-sort bat
 ## How it recognises cards
 
 1. **Motion check (every ~55 ms).** It waits until the card in the box is still.
-2. **Image match (~5–30 ms).** A colour fingerprint of the card is compared with all 1,522 card images in `fp.json`.
+2. **Image match (~5–30 ms).** A colour fingerprint of the card is compared with every card image in `fp.json`.
 3. **Printed code (OCR, only when needed).** About 29% of printings share their art with another printing (alt rarities, promos, overnumbered). For those it reads the code at the bottom, e.g. `UNL025/219`. If the code can't be read, it adds the most likely printing, plays a low beep, and shows a printing dropdown so you can correct it.
 4. **Text fallback.** If the image isn't recognised for about 1 second, it reads the name and code as text.
 
@@ -61,11 +61,14 @@ Serve the folder (`python -m http.server 8765`) and open http://localhost:8765/t
 
 ## New sets
 
-The scanner picks up new cards from the card database automatically, but the image fingerprints need rebuilding:
+When a new set comes out, rebuild the card list and fingerprints, then commit and push:
 ```
 python tools/build_fingerprints.py
+git add cards.json fp.json
+git commit -m "Add new set"
+git push
 ```
-Until you do that, new cards are recognised by text only, which is slower.
+Cards come from Riot's official gallery (new sets show up there first) plus the riftcodex community database for promos and TCGplayer IDs. A set that isn't in `cards.json` can't be scanned at all.
 
 ## Handling a growing collection
 
