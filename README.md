@@ -38,11 +38,22 @@ Phones only allow the camera on HTTPS pages, so the folder needs free hosting, f
 
 ## Using it
 
-- **Stack method (fastest):** fix the camera above a spot on the table, size the guide box to one card (Settings), then lay each card on top of the last one. Each new card is counted once it's still, including a second copy of the same card. A hand passing over without a new card doesn't count.
+- **Mode: hand (default):** hold each card up in the box. It counts once, however much your hand wobbles. To count another copy of the same card, take it out of the box first (or tap **+1** / press `Space`). A different card counts straight away.
+- **Mode: stack (fastest with a stand):** fix the camera above a spot on the table, size the guide box to one card (Settings), then lay each card on top of the last one. A new copy of the same card laid on top counts; a hand passing over without a new card doesn't. Switch with the *Mode* button.
 - **Shortcuts:** `Space` adds another copy of the last card, `Z` undoes, `F` turns foil on or off, `P` pauses, `/` jumps to search.
 - **Foil:** turn on Foil mode and scan all foils together. Neither method can reliably tell foil from non-foil on camera.
 - **Batches:** each card goes into the current batch (B0001, B0002, ...). When a batch reaches the batch size (50 by default), the scanner beeps twice, shows a banner, and starts the next batch. Put the stack in a box and write the code on it. Batch size, prefix and numbering are in Settings and are shared through the sheet. *Set code* fills a named location such as `BINDER-3`.
 - **Removing cards** (sold, traded, moved to a deck): press − in the inventory or on the last-card panel. This logs a −1 against the batch holding the card.
+
+## Learning
+
+Each device learns what its own camera sees, so accuracy improves with use:
+- **Your fixes:** when you pick the right printing in the dropdown, or pick the card by search after a "Not sure", it saves that camera view as an extra reference for the card.
+- **Confirmed scans:** scans confirmed by the printed code, or weaker image matches, are saved once the next 3 cards go by without an undo or correction.
+- **Printing memory:** for cards that share their art, it remembers the printing you chose last and uses it when the code can't be read.
+- **Scoreboard:** Settings shows scans, how many were accepted on the first look, code/text reads, guesses, fixes, undos and average seconds per card.
+
+It never keeps a scan you undid or corrected. Storage is capped (about 0.8 MB per device), and *Forget learned cards* in Settings resets it.
 
 ## The sheet
 

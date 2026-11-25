@@ -127,6 +127,56 @@ async function run() {
   const d = rb.meanDiff(g1, rb.prevGray);
   check('exposure +35%: snapshot difference below the same-card limit (4)', d < 4, 'difference ' + d.toFixed(2));
 
+  // ---- Camera-flow tests with generated "cards" taught to the scanner ----
+  const camL = document.createElement('canvas'); camL.width = 1280; camL.height = 720; const cx = camL.getContext('2d');
+  const G = (() => { const h = Math.min(720*rb.cfg.guide, 1280*0.95*88/63), w = h*63/88; return {x:(1280-w)/2, y:(720-h)/2, w, h}; })();
+  const drawCard = (seed, dx=0, dy=0) => { cx.fillStyle = '#333'; cx.fillRect(0, 0, 1280, 720); let s = seed;
+    const rnd = () => (s = (s*16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 24; i++) { cx.fillStyle = `hsl(${rnd()*360|0},70%,${25+rnd()*50|0}%)`; cx.fillRect(G.x+dx+rnd()*G.w*0.8, G.y+dy+rnd()*G.h*0.8, G.w*(0.15+rnd()*0.3), G.h*(0.1+rnd()*0.25)); } };
+  const drawEmpty = () => { cx.fillStyle = '#333'; cx.fillRect(0, 0, 1280, 720); };
+  const show = n => { for (let i = 0; i < n; i++) rb.step(camL, 1280, 720); };
+  const pause = ms => new Promise(r => setTimeout(r, ms));
+  const place = async (seed, dx=0, dy=0) => { for (const c of ['#a76','#d9b']) { cx.fillStyle = c; cx.fillRect(380, 100, 380, 500); show(1); }
+    drawCard(seed, dx, dy); show(3); await pause(80); };
+  const qty = rid => rb.state.pend.filter(o => o.rid === rid).reduce((s, o) => s + o.qty, 0);
+  // two real cards whose art has no other printing, so no code reading is involved
+  const D = rb.FP.dim, base = rb.FP.baseRefs, singles = [];
+  for (let i = 0; i < rb.FP.baseIds.length && singles.length < 2; i += 13) if (rb.matchVec(base.slice(i*D, (i+1)*D)).rids.length === 1) singles.push(rb.FP.baseIds[i]);
+  const [A, B] = singles;
+
+  // 9. Learning: a learned camera image is recognised; undo/correction forgets it
+  fresh(''); drawCard(7); show(1); const before = rb.recognize();
+  rb.learn(A, before.v, 'fix', 'op-test'); drawCard(7); show(1); const after = rb.recognize();
+  check('learning: learned image is recognised (strong match)', after.rids[0] === A && after.s >= 0.8 && after.m >= 0.08, `best ${after.rids[0]} ${after.s.toFixed(3)}, before ${before.s.toFixed(3)}`);
+  rb.forget('op-test');
+  check('learning: forgetting an undone scan removes it', rb.learned.items.length === 0);
+
+  // 10. Learning keeps same-art printings in play (the printed code still decides between them)
+  let tw = null;
+  const dot = (i, j) => { let s = 0; for (let k = 0; k < D; k++) s += base[i*D+k]*base[j*D+k]; return s; };
+  for (let i = 0; i < rb.FP.baseIds.length && !tw; i += 3) for (let j = 0; j < rb.FP.baseIds.length; j++)
+    if (rb.FP.baseIds[j] !== rb.FP.baseIds[i] && dot(i, j) >= 0.95) { tw = {i, j}; break; }
+  { let s = 99; const rnd = () => (s = (s*16807) % 2147483647) / 2147483647 - 0.5;
+    const w = new Float32Array(D); for (let k = 0; k < D; k++) w[k] = base[tw.i*D+k] + rnd()*0.09; // a "camera" view clearly unlike the official art
+    let L = 0; for (let k = 0; k < D; k++) L += w[k]*w[k]; for (let k = 0; k < D; k++) w[k] /= Math.sqrt(L);
+    rb.learn(rb.FP.baseIds[tw.i], w, 'fix', 'op-tw'); const m = rb.matchVec(w);
+    check('learning: same-art printing still offered', m.rids.includes(rb.FP.baseIds[tw.j]), `${rb.FP.baseIds[tw.i]} vs twin ${rb.FP.baseIds[tw.j]}: ${m.rids.join(',')}`); }
+
+  // 11. Hand scanning: no double count from a wobbling hand; same card again only after the box was empty
+  fresh(''); rb.cfg.mode = 'hand';
+  drawCard(11); show(1); rb.learn(A, rb.recognize().v, 'fix', 'pa');
+  drawCard(23); show(1); rb.learn(B, rb.recognize().v, 'fix', 'pb');
+  await place(11);                       check('hand: first card counted', qty(A) === 1, 'qty ' + qty(A));
+  await place(11, 6, 4);                 check('hand: wobble/hand pass does not double count', qty(A) === 1, 'qty ' + qty(A));
+  drawEmpty(); show(3); await place(11); check('hand: same card after taking it out counts again', qty(A) === 2, 'qty ' + qty(A));
+  rb.undo(); drawCard(11, 3, 2); show(3); await pause(80);
+  check('hand: undo does not re-add the card still in the box', qty(A) === 1, 'qty ' + qty(A));
+  await place(23);                       check('hand: a different card counts straight away', qty(B) === 1, 'qty ' + qty(B));
+  rb.cfg.mode = 'stack';
+  await place(23, 12, 9);                check('stack: new copy laid on top counts', qty(B) === 2, 'qty ' + qty(B));
+  await place(23, 12, 9);                check('stack: hand pass without a new card does not count', qty(B) === 2, 'qty ' + qty(B));
+  rb.cfg.mode = 'hand';
+
   rb.reset(); rb.cfg.syncUrl = '';
   const failed = results.filter(r => !r.ok).length;
   out.innerHTML = results.map(r => `<span class="${r.ok ? 'ok' : 'bad'}">${r.ok ? 'PASS' : 'FAIL'}</span> ${r.name}${r.ok ? '' : ' — ' + r.detail}`).join('\n')

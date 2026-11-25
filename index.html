@@ -82,6 +82,7 @@ dialog h3{margin:16px 0 4px;font-size:14px;color:var(--acc)}
       <button id="foilBtn">Foil: off</button>
       <button id="autoBtn" class="on">Auto-add: on</button>
       <button id="pauseBtn">Pause</button>
+      <button id="modeBtn" title="Hand: hold each card up; the same card counts again only after you take it out. Stack: lay each card on top of the last.">Mode: hand</button>
       <button id="addBtn" class="big" style="display:none">+ Add detected</button>
     </div>
     <div id="batchBox">
@@ -130,7 +131,10 @@ dialog h3{margin:16px 0 4px;font-size:14px;color:var(--acc)}
     <h3>Scanning</h3>
     <label>Guide box size: <span id="sGuideVal"></span><input id="sGuide" type="range" min="0.5" max="0.95" step="0.01"></label>
     <label>Motion tolerance (higher = scans with more shake): <span id="sStillVal"></span><input id="sStill" type="range" min="2" max="15" step="0.5"></label>
-    <label><input id="sStack" type="checkbox" style="width:auto"> Stack mode: count the same card again when a new copy is laid on top</label>
+    <h3>Learning (this device)</h3>
+    <p class="muted" style="margin:4px 0">The scanner learns what your camera sees from your fixes and from confirmed scans. <span id="learnInfo"></span></p>
+    <div id="statsLine" class="muted" style="font-size:13px"></div>
+    <div class="row" style="margin-top:4px"><button type="button" id="forgetBtn">Forget learned cards</button><button type="button" id="statsResetBtn">Reset stats</button></div>
     <h3>Phone setup</h3>
     <p class="muted" style="margin:4px 0">Scan this on your phone to open the scanner with sync already set up (needs the page hosted on HTTPS).</p>
     <div id="qrWrap"><button type="button" id="qrBtn">Show QR code</button><br><div id="qr" style="display:none"></div><div id="qrUrl" class="muted" style="word-break:break-all;font-size:12px"></div></div>
@@ -149,7 +153,7 @@ dialog h3{margin:16px 0 4px;font-size:14px;color:var(--acc)}
 'use strict';
 const $ = s => document.querySelector(s);
 const NS = new URLSearchParams(location.search).has('test') ? 'rb_test_' : 'rb_'; // tests/test.html uses separate storage
-const K = { log:NS+'log_v2', pending:NS+'pending_v2', cfg:NS+'cfg_v2', batch:NS+'batch_v2' };
+const K = { log:NS+'log_v2', pending:NS+'pending_v2', cfg:NS+'cfg_v2', batch:NS+'batch_v2', learn:NS+'learn_v1', stats:NS+'stats_v1' };
 let storageErr=false;
 const load = (k,d) => { try{ const v=JSON.parse(localStorage.getItem(k)); return v ?? d }catch{ return d } };
 const save = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); return true }catch(e){ console.warn('storage', e); storageErr=true; return false } };
@@ -159,8 +163,9 @@ const baseName = n => norm(String(n).replace(/\(.*?\)/g,''));
 const isPhone = /Mobi|Android|iPhone/i.test(navigator.userAgent);
 
 // ---------------- Config ----------------
-const cfg = Object.assign({ syncUrl:'', sheetUrl:'', device: isPhone?'Phone':'PC', guide: isPhone?0.62:0.8, still:5, stack:true,
+const cfg = Object.assign({ syncUrl:'', sheetUrl:'', device: isPhone?'Phone':'PC', guide: isPhone?0.62:0.8, still:5, mode:'hand',
   batch:{ batchSize:50, prefix:'B', digits:4, next:1 } }, load(K.cfg, {}));
+delete cfg.stack; // replaced by cfg.mode; the old default (stack on) caused double counts when scanning by hand
 const saveCfg = () => save(K.cfg, cfg);
 let hashConnected=false;
 (function readHash(){ // phone setup link: #sync=<url>&sheet=<url>
@@ -185,15 +190,17 @@ const numOf = c => typeof c.num==='number' ? numText(c) : c.num; // also for unk
 const prefer = list => list.slice().sort((a,b)=>(a.variant-b.variant)||(a.num-b.num))[0];
 
 // ---------------- Image fingerprints ----------------
-const FP = { W:160, H:224, GX:10, GY:14, ready:false, refs:null, ids:[], dim:420, twins:new Map() };
+// refs/ids = official fingerprints (fp.json) followed by images learned on this device; anchor[i] = an official ref of the same card.
+const FP = { W:160, H:224, GX:10, GY:14, ready:false, refs:null, ids:[], anchor:[], baseRefs:null, baseIds:[], scale:600, dim:420, twins:new Map() };
 async function loadFingerprints(){
   try{
     const j = await (await fetch('fp.json')).json();
-    const bin = atob(j.data), n = bin.length, refs = new Float32Array(n);
-    for(let i=0;i<n;i++){ const b=bin.charCodeAt(i); refs[i]=(b>127?b-256:b)/j.scale; }
-    Object.assign(FP,{refs, ids:j.ids, dim:j.dim, ready:true});
+    Object.assign(FP,{baseRefs:fromQ(j.data,j.scale), baseIds:j.ids, dim:j.dim, scale:j.scale});
+    rebuildRefs(); FP.ready=true;
   }catch(e){ console.warn('No fingerprints, OCR only', e); }
 }
+const fromQ=(b64,scale=FP.scale)=>{ const bin=atob(b64), v=new Float32Array(bin.length); for(let i=0;i<bin.length;i++){ const x=bin.charCodeAt(i); v[i]=(x>127?x-256:x)/scale; } return v; };
+const toQ=v=>{ let s=''; for(let i=0;i<v.length;i++) s+=String.fromCharCode(Math.max(-127,Math.min(127,Math.round(v[i]*FP.scale)))&255); return btoa(s); };
 // Work canvas: guide rect plus PAD on every side, scaled so the card is 160x224.
 const PAD=0.1, WW=Math.round(FP.W*(1+2*PAD)), WH=Math.round(FP.H*(1+2*PAD));
 const work=document.createElement('canvas'); work.width=WW; work.height=WH;
@@ -234,19 +241,20 @@ function matchVec(v){
   const {refs,dim}=FP, N=FP.ids.length; let best=-1,bi=-1; const sc=new Float32Array(N);
   for(let j=0;j<N;j++){ let s=0; const p=j*dim; for(let k=0;k<dim;k++) s+=refs[p+k]*v[k]; sc[j]=s; if(s>best){best=s;bi=j;} }
   // Group = same-art printings plus anything scoring almost as high; the printed code decides between them.
-  const tw=new Set(twinsOf(bi)); for(let j=0;j<N;j++) if(sc[j]>=best-0.02) tw.add(j);
+  // A learned camera image looks less like the official art of other printings, so find twins from the card's official image.
+  const tw=new Set(twinsOf(FP.anchor[bi])); tw.add(bi); for(let j=0;j<N;j++) if(sc[j]>=best-0.02) tw.add(j);
   let second=-1; for(let j=0;j<N;j++) if(!tw.has(j) && sc[j]>second) second=sc[j];
   const rids=[...new Set([...tw].sort((a,b)=>sc[b]-sc[a]).map(j=>FP.ids[j]))].filter(r=>byRid[r]);
   return {s:best, m:best-second, rids, key:FP.ids[bi]};
 }
 function recognize(){ // centre crop first, then a small search over offsets/scales
   const cx=PAD*FP.W, cy=PAD*FP.H;
-  const c0=fingerprint(cx,cy,FP.W,FP.H); let best=matchVec(c0.v); best.gray=c0.gray;
+  const c0=fingerprint(cx,cy,FP.W,FP.H); let best=matchVec(c0.v); best.gray=c0.gray; best.v=c0.v;
   if(best.s>=0.8 && best.m>=0.08) return best;
   for(const dx of [-0.04,0,0.04]) for(const dy of [-0.03,0,0.03]) for(const sc of [0.95,1,1.05]){
     if(!dx&&!dy&&sc===1) continue;
     const w=FP.W*sc,h=FP.H*sc, f=fingerprint(cx+(FP.W-w)/2+dx*FP.W, cy+(FP.H-h)/2+dy*FP.H, w, h), r=matchVec(f.v);
-    if(r.s>best.s){ r.gray=c0.gray; best=r; }
+    if(r.s>best.s){ r.gray=c0.gray; r.v=f.v; best=r; }
   }
   return best;
 }
@@ -305,6 +313,7 @@ async function ocrFull(src,g){ // last resort when the image is not recognised
 const video=$('#video');
 let stream=null, running=false, paused=false, auto=true, foil=false;
 let prevGray=null, stillN=0, evaluated=false, busy=false, lastEval=null, lockGray=null, armed=true, lockRid=null, unknownSince=0, pending=null;
+let lockGroup=[], seenEmpty=true, stillSince=0, evals=0, notSureShown=false, lastRec=null, unresolved=null, pendingScan=null;
 
 function guideRect(vw,vh){ const h=Math.min(vh*cfg.guide, vw*0.95*88/63), w=h*63/88; return {x:(vw-w)/2,y:(vh-h)/2,w,h}; }
 function layoutGuide(){
@@ -349,49 +358,119 @@ function step(src,vw,vh){
   const motion=prevGray?meanDiff(gray,prevGray):99; prevGray=gray;
   const lockDiff=lockGray?meanDiff(gray,lockGray):99;
   if(lockDiff>18) armed=true;              // the scene clearly changed since the last add
-  if(motion>cfg.still){ stillN=0; evaluated=false; lastEval=null; guideState('moving'); return; }
+  if(motion>cfg.still){ stillN=0; stillSince=0; evals=0; notSureShown=false; evaluated=false; lastEval=null; guideState('moving'); return; }
+  if(!stillSince) stillSince=performance.now();
   if(++stillN<2 || evaluated || busy) return;
   if(!FP.ready){ evaluated=true; fallbackOcr(src,g); return; }
-  const r=recognize();
+  const r=recognize(); evals++; lastRec=r;
   if(r.s<0.5){ guideState(''); lastEval=null; setStatus('Waiting for a card…');
+    if(r.s<0.45 && lockDiff>18) seenEmpty=true;  // the counted card is gone from the box
     if(r.s<0.35){ unknownSince=0; return; }   // nothing card-like in view: don't read random text (playmats)
+    noteUnresolved(r,gray);
     if(!unknownSince) unknownSince=performance.now(); return maybeOcr(src,g); }
   const strong=r.s>=0.8&&r.m>=0.08, medium=r.s>=0.65&&r.m>=0.05;
   const agree=lastEval&&lastEval.key===r.key; lastEval=r;
   // s>=0.9: the art is certain but another card looks almost the same; the printed code decides below.
-  if(!(strong||(medium&&agree)||(r.s>=0.9&&agree))){ if(!unknownSince) unknownSince=performance.now(); setStatus(`Reading… (${(r.s*100|0)}%)`); return maybeOcr(src,g); }
+  if(!(strong||(medium&&agree)||(r.s>=0.9&&agree))){ noteUnresolved(r,gray); if(!unknownSince) unknownSince=performance.now(); setStatus(`Reading… (${(r.s*100|0)}%)`); return maybeOcr(src,g); }
   unknownSince=0; evaluated=true;
   const list=r.rids.map(x=>byRid[x]);
-  if(list.length===1) return decide(list[0], gray, `image ${(r.s*100|0)}%`);
+  if(list.length===1) return decide(list[0], gray, `image ${(r.s*100|0)}%`, false, r);
   // Same art in several printings: read the printed code to pick the right one.
   busy=true; setStatus(`Checking printing of ${list[0].name}…`);
   const timeout=new Promise(res=>setTimeout(()=>res(''),1500));
+  const guess=()=>{ // code unreadable: use the printing you chose last time for this card, else the most common one
+    const names=[...new Set(list.map(c=>baseName(c.name)))];
+    if(names.length>1){ guideState(''); noteUnresolved(r,gray); if(!notSureShown){ notSureShown=true; stats.notSure++; saveStats(); }
+      setStatus(`Not sure: ${list.slice(0,3).map(c=>c.name).join(' / ')}. Adjust the card or use search.`); evaluated=false; return; }
+    const mem=byRid[learned.picks[names[0]]], usual=mem&&list.includes(mem)?mem:null;
+    decide(usual||prefer(list), gray, usual?'image, your usual printing':'image, printing guessed', true, r);
+  };
   Promise.race([ocrStrip(src,g),timeout]).then(txt=>{
     const pick=pickByCode(list,parseCode(txt));
-    if(pick) return decide(pick, gray, 'image + code');
-    const names=[...new Set(list.map(c=>baseName(c.name)))];
-    if(names.length>1){ guideState(''); setStatus(`Not sure: ${list.slice(0,3).map(c=>c.name).join(' / ')}. Adjust the card or use search.`); evaluated=false; return; }
-    decide(prefer(list), gray, 'image, printing guessed', true);
-  }).catch(()=>decide(prefer(list),gray,'image, printing guessed',true)).finally(()=>busy=false);
+    if(!pick) return guess();
+    learned.picks[baseName(pick.name)]=pick.rid; saveLearned();
+    decide(pick, gray, 'image + code', false, r);
+  }).catch(guess).finally(()=>busy=false);
 }
+function noteUnresolved(r,gray){ unresolved={v:r.v, gray, rids:r.rids, t:performance.now()}; } // for learning if you then pick the card by search
 function maybeOcr(src,g){ // image not recognised for a while: try reading text instead
   if(unknownSince && performance.now()-unknownSince>900 && !busy){ evaluated=true; unknownSince=0; fallbackOcr(src,g); }
 }
 function fallbackOcr(src,g){
-  busy=true; const gray=prevGray;
-  ocrFull(src,g).then(c=>{ if(c) decide(c,gray,'text'); else setStatus('Not recognised. Try better light, or search below.'); })
+  busy=true; const gray=prevGray, r=lastRec;
+  ocrFull(src,g).then(c=>{ if(c) decide(c,gray,'text',false,r); else setStatus('Not recognised. Try better light, or search below.'); })
     .catch(e=>setStatus('OCR error: '+e.message)).finally(()=>busy=false);
 }
 function meanDiff(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
-function decide(card, gray, how, guessed){
+function decide(card, gray, how, guessed, r){
   guideState('hit');
+  // "Same card" includes its same-art printings: a re-read that picks another printing is not a new card.
+  const same = !!lockRid && (card.rid===lockRid || lockGroup.includes(card.rid));
   const sameScene = lockGray && meanDiff(gray,lockGray) < 4;
-  if(!armed || (card.rid===lockRid && (!cfg.stack || sameScene))){
-    setStatus(`✓ ${card.name} · ${card.code} ${numText(card)} (counted; place the next card)`); return; }
-  lockGray=gray; lockRid=card.rid; armed=false;
-  if(auto){ addCard(card.rid, foil, 1); setStatus(`✓ Added ${card.name} · ${card.code} ${numText(card)} [${how}]${guessed?' · check printing':''}`); }
-  else { pending=card.rid; showLast(card,foil); $('#addBtn').style.display=''; setStatus(`Detected ${card.name}. Press Enter or “Add”.`); }
+  // Hand: one count per time a card is shown; the same card again only after the box was empty.
+  // Stack: the scene changed (hand) and settled with a new copy slightly offset on top.
+  const count = cfg.mode==='stack' ? armed && !(same && sameScene) : same ? seenEmpty : (armed || seenEmpty);
+  if(!count){ setStatus(`✓ ${card.name} · ${card.code} ${numText(card)} (counted; ${cfg.mode==='stack'?'place the next card':'take it out, or tap +1 for another copy'})`); return; }
+  lockGray=gray; lockRid=card.rid; lockGroup=r?.rids||[card.rid]; armed=false; seenEmpty=false; unresolved=null;
+  // Learn from confirmed reads and from weaker image matches (strong ones add nothing); never from guessed printings.
+  const scan={v:r?.v, learn:!!r?.v && !guessed && (how.includes('code') || how==='text' || r.s<0.93), how, guessed, first:evals<=1, ms:stillSince?performance.now()-stillSince:0};
+  if(auto){ addCard(card.rid, foil, 1).then(op=>noteScan(op,card,scan)); setStatus(`✓ Added ${card.name} · ${card.code} ${numText(card)} [${how}]${guessed?' · check printing':''}`); }
+  else { pending=card.rid; pendingScan=scan; showLast(card,foil); $('#addBtn').style.display=''; setStatus(`Detected ${card.name}. Press Enter or “Add”.`); }
   if(guessed) beep(440,0.12);
+}
+function addPending(){ const rid=pending, scan=pendingScan; pending=null; pendingScan=null; if(rid) addCard(rid,foil,1).then(op=>scan&&noteScan(op,byRid[rid],scan)); }
+
+// ---------------- Learning from this device's camera ----------------
+// Extra reference images of real cards under your light. Kept per device (cameras differ), capped at ~0.8 MB.
+const LEARN_MAX=1200, PER_CARD=3, freshStats=()=>({scans:0,first:0,code:0,text:0,guessed:0,notSure:0,fixes:0,undos:0,ms:0});
+let learned=load(K.learn,{items:[],picks:{}}), stats=Object.assign(freshStats(),load(K.stats,{})), candidates=[], lastScan=null;
+const saveLearned=()=>save(K.learn,learned), saveStats=()=>save(K.stats,stats);
+function rebuildRefs(){
+  if(!FP.baseRefs) return;
+  const L=learned.items.filter(it=>byRid[it.rid]), D=FP.dim, n=FP.baseIds.length, first={};
+  const refs=new Float32Array((n+L.length)*D); refs.set(FP.baseRefs);
+  L.forEach((it,i)=>refs.set(fromQ(it.q),(n+i)*D));
+  FP.baseIds.forEach((rid,i)=>{ if(!(rid in first)) first[rid]=i; });
+  FP.refs=refs; FP.ids=FP.baseIds.concat(L.map(it=>it.rid));
+  FP.anchor=FP.ids.map((rid,i)=>i<n?i:(first[rid]??i)); FP.twins=new Map();
+}
+function learn(rid, v, src, op){
+  if(!v || !FP.baseRefs || !byRid[rid]) return;
+  const items=learned.items.filter(it=>!(op && it.op===op)), mine=items.filter(it=>it.rid===rid);
+  if(mine.length>=PER_CARD) items.splice(items.indexOf(mine[0]),1);            // keep the newest few per card
+  items.push({rid, q:toQ(v), src, op:op||'', t:Date.now()});
+  while(items.length>LEARN_MAX){ const i=items.findIndex(it=>it.src==='ok'); items.splice(i>=0?i:0,1); } // fixes outlive plain scans
+  learned.items=items; saveLearned(); rebuildRefs();
+}
+function forget(op){ // a scan that was undone or corrected must not stay learned
+  candidates=candidates.filter(c=>c.op!==op);
+  const n=learned.items.length; learned.items=learned.items.filter(it=>it.op!==op);
+  if(learned.items.length!==n){ saveLearned(); rebuildRefs(); }
+}
+function noteScan(op, card, scan){
+  if(!op) return;
+  lastScan={op:op.opId, v:scan.v, rid:card.rid};
+  if(scan.learn) candidates.push({op:op.opId, rid:card.rid, v:scan.v, after:0});
+  stats.scans++; stats.ms+=scan.ms; if(scan.first) stats.first++; if(scan.how.includes('code')) stats.code++;
+  if(scan.how==='text') stats.text++; if(scan.guessed) stats.guessed++; saveStats();
+}
+function promoteCandidates(){ // a scan nobody undid or corrected during the next 3 cards is trusted
+  candidates.forEach(c=>c.after++);
+  const ok=candidates.filter(c=>c.after>=3); candidates=candidates.filter(c=>c.after<3);
+  ok.forEach(c=>learn(c.rid,c.v,'ok',c.op));
+}
+async function addFromSearch(rid){
+  const u=unresolved, op=await addCard(rid,foil,1);
+  // Picked by hand while the scanner couldn't tell what's in the box (and it's still there): learn what the camera saw.
+  if(op && u && performance.now()-u.t<20000 && prevGray && meanDiff(prevGray,u.gray)<12){
+    learn(rid,u.v,'fix',op.opId); stats.fixes++; saveStats(); unresolved=null;
+    lockGray=u.gray; lockRid=rid; lockGroup=[...u.rids,rid]; armed=false; seenEmpty=false; lastScan={op:op.opId, v:u.v, rid};
+  }
+}
+function renderLearn(){
+  const s=stats, pct=n=>Math.round(n/s.scans*100)+'%', cardsN=new Set(learned.items.map(i=>i.rid)).size;
+  $('#learnInfo').textContent=`Learned ${learned.items.length} image${learned.items.length===1?'':'s'} of ${cardsN} card${cardsN===1?'':'s'}.`;
+  $('#statsLine').textContent=s.scans?`${s.scans} scans · first look ${pct(s.first)} · code read ${pct(s.code)} · text ${pct(s.text)} · printing guessed ${pct(s.guessed)} · fixed ${pct(s.fixes)} · undone ${pct(s.undos)} · not sure ${s.notSure}× · avg ${(s.ms/s.scans/1000).toFixed(2)} s per card`:'No scans yet.';
 }
 const setStatus=t=>$('#status').textContent=t;
 const guideState=s=>{ const el=$('#guide'); el.classList.toggle('moving',s==='moving'); el.classList.toggle('hit',s==='hit'); };
@@ -445,7 +524,7 @@ async function addCardNow(rid, f, qty, batchCode){
   }
   const op=opFor(card,f,qty,batchCode);
   pend.push(op); save(K.pending,pend);
-  if(qty>0){ undoStack.push(op); lastAdd={rid,f}; beep(); flash(); }
+  if(qty>0){ undoStack.push(op); lastAdd={rid,f}; beep(); flash(); promoteCandidates(); }
   recompute(); render(); showLast(card,f); kickSync();
   if(qty>0 && batch && batchCode===batch.code){
     const n=batchCount();
@@ -459,7 +538,8 @@ function undo(){
   const i=pend.findIndex(p=>p.opId===op.opId);
   if(i>=0 && !pend[i].sent){ pend.splice(i,1); save(K.pending,pend); recompute(); render(); }
   else addCard(op.rid, op.foil, -op.qty, op.batch);
-  lockRid=null; lockGray=null; armed=true; setStatus(`Undid ${op.name}.`);
+  forget(op.opId); stats.undos++; saveStats();
+  setStatus(`Undid ${op.name}.`); // the lock stays, so the card still in the box isn't counted again
   showLast(byRid[op.rid],op.foil);
 }
 
@@ -558,9 +638,15 @@ function showLast(c,f=foil){
   L.querySelector('[data-a=minus]').onclick=()=>addCard(c.rid,f,-1);
   // Swap one copy to foil / another printing. The new copy goes into the batch the old one was taken from.
   const swap=async(rid2,f2)=>{ const last=undoStack.at(-1), b=last&&last.rid===c.rid&&last.foil===!!f?last.batch:undefined;
-    const rm=inv.get(k)?await addCard(c.rid,f,-1,b):null; await addCard(rid2,f2,1,rm?rm.batch:undefined); };
+    const wasScan=rid2!==c.rid && last && lastScan && last.opId===lastScan.op; // correcting the card just scanned
+    const rm=inv.get(k)?await addCard(c.rid,f,-1,b):null, add=await addCard(rid2,f2,1,rm?rm.batch:undefined);
+    if(rid2===c.rid) return;
+    learned.picks[baseName(byRid[rid2].name)]=rid2; saveLearned();      // remember the printing you chose
+    lockRid=rid2; lockGroup.push(rid2);
+    if(wasScan){ forget(lastScan.op); learn(rid2,lastScan.v,'fix',add?.opId); stats.fixes++; saveStats(); lastScan={...lastScan, op:add?.opId, rid:rid2}; }
+  };
   L.querySelector('[data-a=foil]').onclick=()=>inv.get(k)?swap(c.rid,!f):showLast(c,!f);
-  const vs=$('#variantSel'); if(vs) vs.onchange=async()=>{ await swap(vs.value,f); lockRid=vs.value; };
+  const vs=$('#variantSel'); if(vs) vs.onchange=()=>swap(vs.value,f);
 }
 let banTimer; function showBanner(t){ const b=$('#banner'); b.textContent=t; b.style.display='block'; clearTimeout(banTimer); banTimer=setTimeout(()=>b.style.display='none',6000); }
 
@@ -578,11 +664,11 @@ function drawResults(){
   $('#results').innerHTML=resList.map((c,i)=>{ const k0=c.rid+'|0', k1=c.rid+'|1', q=(inv.get(k0)||0)+(inv.get(k1)||0), where=[...batchesOf(k0),...batchesOf(k1)].map(b=>b[0]);
     return `<div class="res ${i===resSel?'sel':''}" data-i="${i}"><img src="${esc(c.img)}" alt="" loading="lazy"><span style="flex:1">${esc(c.name)}<br><span class="muted">${esc(c.code)} ${numText(c)} · ${esc(c.rarity)}</span></span><span class="muted" style="text-align:right">${q?`own ${q}<br>${esc([...new Set(where)].join(', '))}`:''}</span></div>`; }).join('');
 }
-$('#results').onclick=e=>{ const r=e.target.closest('.res'); if(r) addCard(resList[+r.dataset.i].rid, foil, 1); };
+$('#results').onclick=e=>{ const r=e.target.closest('.res'); if(r) addFromSearch(resList[+r.dataset.i].rid); };
 $('#search').onkeydown=e=>{
   if(e.key==='ArrowDown'){ resSel=Math.min(resSel+1,resList.length-1); drawResults(); e.preventDefault(); }
   else if(e.key==='ArrowUp'){ resSel=Math.max(resSel-1,0); drawResults(); e.preventDefault(); }
-  else if(e.key==='Enter'&&resList[resSel]){ addCard(resList[resSel].rid,foil,1); $('#search').select(); }
+  else if(e.key==='Enter'&&resList[resSel]){ addFromSearch(resList[resSel].rid); $('#search').select(); }
   else if(e.key==='Escape') $('#search').blur();
 };
 
@@ -592,7 +678,10 @@ const setPause=v=>{ paused=v; $('#pauseBtn').textContent=v?'Resume':'Pause'; $('
 $('#foilBtn').onclick=()=>setFoil(!foil);
 $('#pauseBtn').onclick=()=>setPause(!paused);
 $('#autoBtn').onclick=()=>{ auto=!auto; $('#autoBtn').textContent=`Auto-add: ${auto?'on':'off'}`; $('#autoBtn').classList.toggle('on',auto); if(auto) $('#addBtn').style.display='none'; };
-$('#addBtn').onclick=()=>{ if(pending){ addCard(pending,foil,1); pending=null; } };
+$('#addBtn').onclick=addPending;
+const setMode=m=>{ cfg.mode=m; saveCfg(); $('#modeBtn').textContent=`Mode: ${m}`; $('#modeBtn').classList.toggle('on',m==='stack'); };
+$('#modeBtn').onclick=()=>setMode(cfg.mode==='stack'?'hand':'stack');
+setMode(cfg.mode);
 $('#newBatchBtn').onclick=async()=>{ await startBatch(); setStatus(`Started batch ${batch.code}.`); };
 $('#setBatchBtn').onclick=async()=>{ const c=prompt('Batch code to fill (e.g. BINDER-3):', batch?.code||''); if(c&&c.trim()) await startBatch(c.trim()); };
 addEventListener('keydown',e=>{
@@ -602,7 +691,7 @@ addEventListener('keydown',e=>{
   else if(e.key==='f'||e.key==='F') setFoil(!foil);
   else if(e.key==='p'||e.key==='P') setPause(!paused);
   else if(e.key==='/'){ e.preventDefault(); $('#search').focus(); }
-  else if(e.key==='Enter'&&pending){ addCard(pending,foil,1); pending=null; }
+  else if(e.key==='Enter'&&pending) addPending();
 });
 
 // ---------------- Settings dialog ----------------
@@ -610,14 +699,14 @@ const dlg=$('#settings'); let guideBefore=cfg.guide;
 $('#settingsBtn').onclick=()=>{
   $('#sSync').value=cfg.syncUrl; $('#sSheet').value=cfg.sheetUrl; $('#sDevice').value=cfg.device;
   $('#sBatchSize').value=cfg.batch.batchSize; $('#sPrefix').value=cfg.batch.prefix; $('#sDigits').value=cfg.batch.digits; $('#sNext').value=cfg.batch.next;
-  $('#sGuide').value=cfg.guide; $('#sGuideVal').textContent=Math.round(cfg.guide*100)+'%'; $('#sStill').value=cfg.still; $('#sStillVal').textContent=cfg.still; $('#sStack').checked=cfg.stack;
+  $('#sGuide').value=cfg.guide; $('#sGuideVal').textContent=Math.round(cfg.guide*100)+'%'; $('#sStill').value=cfg.still; $('#sStillVal').textContent=cfg.still; renderLearn();
   $('#qr').style.display='none'; $('#qrUrl').textContent=''; guideBefore=cfg.guide; dlg.returnValue=''; dlg.showModal();
 };
 $('#sGuide').oninput=e=>{ $('#sGuideVal').textContent=Math.round(e.target.value*100)+'%'; cfg.guide=+e.target.value; layoutGuide(); };
 $('#sStill').oninput=e=>$('#sStillVal').textContent=e.target.value;
 $('#saveSettings').onclick=async()=>{
   const urlChanged=cfg.syncUrl!==$('#sSync').value.trim();
-  Object.assign(cfg,{syncUrl:$('#sSync').value.trim(), sheetUrl:$('#sSheet').value.trim(), device:$('#sDevice').value.trim()||cfg.device, guide:+$('#sGuide').value, still:+$('#sStill').value, stack:$('#sStack').checked});
+  Object.assign(cfg,{syncUrl:$('#sSync').value.trim(), sheetUrl:$('#sSheet').value.trim(), device:$('#sDevice').value.trim()||cfg.device, guide:+$('#sGuide').value, still:+$('#sStill').value});
   const nb={batchSize:Math.max(1,+$('#sBatchSize').value||50), prefix:$('#sPrefix').value, digits:Math.max(1,+$('#sDigits').value||4), next:Math.max(1,+$('#sNext').value||1)};
   const batchChanged=JSON.stringify(nb)!==JSON.stringify(cfg.batch);
   cfg.batch=nb; saveCfg(); layoutGuide();
@@ -641,6 +730,8 @@ $('#qrBtn').onclick=()=>{
   const el=$('#qr'); el.innerHTML=''; el.style.display='inline-block'; new QRCode(el,{text:url,width:220,height:220,correctLevel:QRCode.CorrectLevel.L});
   $('#qrUrl').textContent=location.protocol==='https:'?url:'This page is not on HTTPS, so phones will block the camera. Host it first (see README).';
 };
+$('#forgetBtn').onclick=()=>{ if(confirm('Forget everything this device learned about your cards?')){ learned={items:[],picks:{}}; candidates=[]; saveLearned(); rebuildRefs(); renderLearn(); } };
+$('#statsResetBtn').onclick=()=>{ stats=freshStats(); saveStats(); renderLearn(); };
 $('#resyncBtn').onclick=()=>{ if(!cfg.syncUrl) return alert('Add the web app URL first.'); sync(true).then(()=>alert('Re-synced from the sheet.')); };
 $('#clearBtn').onclick=()=>{ if(confirm(`Clear this device's local copy? ${pend.length} unsynced change(s) will be lost. The Google Sheet is not touched.`)){ log=[]; pend=[]; batch=null; save(K.log,log); save(K.pending,pend); save(K.batch,null); recompute(); render(); } };
 const csvCell=v=>{ v=String(v??''); return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v; };
@@ -661,6 +752,7 @@ function flash(){ const f=$('#flash'); f.style.opacity=.15; setTimeout(()=>f.sty
   // one-time migration from the first version's inventory
   const old=load('rb_inventory_v1',null), oldDb=load('rb_cards_v1',null);
   await Promise.all([initDb(), loadFingerprints()]);
+  rebuildRefs(); // learned images need the card list loaded
   if(old && oldDb?.cards && !log.length && !pend.length){
     const idMap=Object.fromEntries((oldDb.cards||[]).map(c=>[c.id,c.rid]));
     for(const [k,q] of Object.entries(old)){ const [id,f]=k.split('|'), c=byRid[idMap[id]]; if(c&&q>0) pend.push(opFor(c,f==='1',q,'UNSORTED')); }
@@ -670,9 +762,12 @@ function flash(){ const f=$('#flash'); f.style.opacity=.15; setTimeout(()=>f.sty
   renderBatch(); sync();
 })();
 // Test hook for tests/test.html
-window.__rb = { step, recognize, matchVec, parseCode, pickByCode, addCard, undo, sync, startBatch, pushBatchSettings, meanDiff,
+window.__rb = { step, recognize, matchVec, parseCode, pickByCode, addCard, undo, sync, startBatch, pushBatchSettings, meanDiff, learn, forget, addFromSearch,
   get FP(){return FP}, get cfg(){return cfg}, get cards(){return cards}, get byRid(){return byRid}, get prevGray(){return prevGray},
-  get state(){return {log,pend,batch,inv}}, reset(){ log=[]; pend=[]; batch=null; undoStack=[]; lockGray=null; lockRid=null; armed=true; recompute(); } };
+  get learned(){return learned}, get stats(){return stats}, get candidates(){return candidates},
+  get state(){return {log,pend,batch,inv}},
+  reset(){ log=[]; pend=[]; batch=null; undoStack=[]; lockGray=null; lockRid=null; lockGroup=[]; armed=true; seenEmpty=true; prevGray=null; evaluated=false; busy=false;
+    unresolved=null; lastScan=null; candidates=[]; learned={items:[],picks:{}}; stats=freshStats(); rebuildRefs(); recompute(); } };
 </script>
 </body>
 </html>
